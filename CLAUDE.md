@@ -62,9 +62,13 @@ with the user is in Hebrew.
     uses this package and gets deployed. Documented here anyway since it's project-independent
     context worth having on hand.
 
-- **Git / GitHub** - the `gh` CLI is already authenticated in this environment; so is plain `git`
-  (global `user.name`/`user.email` are already configured machine-wide - don't set them per-repo
-  unless something looks wrong). Git user / GitHub account: Eyal Meshulam.
+- **Git / GitHub** - the `gh` CLI is already authenticated in this environment. Git user / GitHub
+  account: Eyal Meshulam. **Do not assume plain `git` already has a global `user.name`/
+  `user.email` configured** - that turned out to be false on this machine (checked 2026-07-10):
+  the first commit attempt failed with "Author identity unknown" until it was set explicitly, with
+  Eyal's approval, as `Eyal Meshulam` / `meshulam.eyal@gmail.com`. If a fresh session hits the same
+  error, that's expected - just confirm with Eyal before running `git config --global` (never edit
+  git config without asking first).
   - Verify: `gh auth status` (should show a logged-in account, no login flow needed).
   - This folder already has a `.git` init (see `ls -la` output from when the folder was first
     created) - check `git remote -v` before assuming there's no remote yet. If there's no remote,
