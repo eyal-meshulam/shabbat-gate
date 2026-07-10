@@ -9,7 +9,12 @@ describe('pairWindows', () => {
     ]);
 
     expect(windows).toEqual([
-      { start: new Date('2026-08-14T18:52:00').getTime(), end: new Date('2026-08-15T19:48:00').getTime(), label: 'Candle lighting' },
+      {
+        start: new Date('2026-08-14T18:52:00').getTime(),
+        end: new Date('2026-08-15T19:48:00').getTime(),
+        label: 'Candle lighting',
+        closingLabel: 'Candle lighting',
+      },
     ]);
   });
 
@@ -23,6 +28,39 @@ describe('pairWindows', () => {
     expect(windows).toHaveLength(1);
     expect(windows[0].start).toBe(new Date('2026-09-11T18:40:00').getTime());
     expect(windows[0].end).toBe(new Date('2026-09-13T19:33:00').getTime());
+  });
+
+  it('uses the given defaults for a plain Shabbat window (no holiday item nearby)', () => {
+    const windows = pairWindows(
+      [
+        { title: 'Candle lighting', hebrew: 'הדלקת נרות', date: '2026-08-14T18:52:00', category: 'candles' },
+        { title: 'Havdalah', hebrew: 'הבדלה', date: '2026-08-15T19:48:00', category: 'havdalah' },
+      ],
+      { label: 'שבת קודש', closingLabel: 'השבת' },
+    );
+
+    expect(windows).toEqual([
+      {
+        start: new Date('2026-08-14T18:52:00').getTime(),
+        end: new Date('2026-08-15T19:48:00').getTime(),
+        label: 'שבת קודש',
+        closingLabel: 'השבת',
+      },
+    ]);
+  });
+
+  it('uses the holiday item\'s own Hebrew name instead of the generic candle-lighting text', () => {
+    const windows = pairWindows(
+      [
+        { title: 'Erev Rosh Hashana', hebrew: 'ערב ראש השנה', date: '2026-09-11', category: 'holiday' },
+        { title: 'Candle lighting', hebrew: 'הדלקת נרות', date: '2026-09-11T18:10:00', category: 'candles' },
+        { title: 'Havdalah', hebrew: 'הבדלה', date: '2026-09-13T19:24:00', category: 'havdalah' },
+      ],
+      { label: 'שבת קודש', closingLabel: 'השבת' },
+    );
+
+    expect(windows[0].label).toBe('ערב ראש השנה');
+    expect(windows[0].closingLabel).toBe('ערב ראש השנה');
   });
 
   it('produces multiple independent windows across unrelated events', () => {
@@ -39,8 +77,8 @@ describe('pairWindows', () => {
 
 describe('isBlocked / findActiveWindow', () => {
   const windows: Window[] = [
-    { start: 1000, end: 2000, label: 'שבת' },
-    { start: 5000, end: 6000, label: 'ראש השנה' },
+    { start: 1000, end: 2000, label: 'שבת', closingLabel: 'השבת' },
+    { start: 5000, end: 6000, label: 'ראש השנה', closingLabel: 'ראש השנה' },
   ];
 
   it('reports blocked when now falls inside a window', () => {

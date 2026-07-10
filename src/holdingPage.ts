@@ -1,6 +1,7 @@
 export interface HoldingPageContext {
   siteName: string;
   reasonLabel: string;
+  closingLabel: string;
   untilLabel: string;
 }
 
@@ -36,7 +37,7 @@ export function defaultRenderHoldingPage(ctx: HoldingPageContext): string {
 <body>
   <div class="card">
     <h1>${ctx.siteName}</h1>
-    <p>האתר סגור לכבוד ${ctx.reasonLabel}, ניפגש שוב אחרי הצאת ${ctx.reasonLabel}.</p>
+    <p>האתר סגור לכבוד ${ctx.reasonLabel}, ניפגש שוב אחרי צאת ${ctx.closingLabel}.</p>
     <p class="until">שעת פתיחה משוערת: ${ctx.untilLabel}</p>
   </div>
 </body>

@@ -96,6 +96,7 @@ export function createShabbatGate(config: ShabbatGateConfig): PagesFunction {
       const html = render({
         siteName: config.siteName,
         reasonLabel: active.label,
+        closingLabel: active.closingLabel,
         untilLabel: formatJerusalemTime(active.end),
       });
 

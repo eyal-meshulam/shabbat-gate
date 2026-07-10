@@ -1,7 +1,11 @@
 export interface Window {
   start: number;
   end: number;
+  /** Hebrew label for "the site is closed for ___". */
   label: string;
+  /** Hebrew label for "back after ___ [ends]" - grammatically distinct from
+   *  `label` for Shabbat ("שבת קודש" opening vs. "השבת" closing). */
+  closingLabel: string;
 }
 
 interface HebcalItem {
@@ -17,28 +21,55 @@ interface HebcalResponse {
 
 const HEBCAL_JERUSALEM_GEONAME_ID = 281184;
 
+/** Hebcal's own "candles"/"havdalah" items always carry the generic literal
+ *  "הדלקת נרות"/"הבדלה" in their `hebrew` field, never the occasion name - so
+ *  it's unusable as a display label on its own. For a plain Shabbat week
+ *  (no accompanying `holiday` item), fall back to this fixed pair instead. */
+const SHABBAT_LABEL = 'שבת קודש';
+const SHABBAT_CLOSING_LABEL = 'השבת';
+
 /**
  * Pairs candles/havdalah events into continuous windows. Multi-day holidays
  * (e.g. Rosh Hashana) emit two "candles" events but only one "havdalah" at the
  * very end, so candles cannot simply be paired 1:1 with the next havdalah.
  * Instead: open a window on the first candles seen while none is open, ignore
  * further candles while one is open, and close on the next havdalah.
+ *
+ * `defaults` overrides the label for windows that have no `holiday`-category
+ * item nearby (i.e. plain Shabbat weeks) - pass it when calling this with the
+ * Shabbat endpoint's items. Holiday windows always pick up the most recent
+ * `holiday` item's own Hebrew name instead (e.g. "ערב ראש השנה"), since that's
+ * far more informative than the generic candle-lighting text.
  */
-export function pairWindows(items: HebcalItem[]): Window[] {
+export function pairWindows(items: HebcalItem[], defaults?: { label: string; closingLabel: string }): Window[] {
   const windows: Window[] = [];
   let openStart: number | null = null;
   let openLabel = '';
+  let openClosingLabel = '';
+  let lastHolidayLabel: string | null = null;
 
   for (const item of items) {
+    if (item.category === 'holiday') {
+      lastHolidayLabel = item.hebrew ?? item.title;
+    }
     if (item.category === 'candles') {
       if (openStart === null) {
         openStart = new Date(item.date).getTime();
-        openLabel = item.hebrew ?? item.title;
+        const label = lastHolidayLabel ?? defaults?.label ?? item.hebrew ?? item.title;
+        openLabel = label;
+        openClosingLabel = lastHolidayLabel ? label : (defaults?.closingLabel ?? label);
       }
     } else if (item.category === 'havdalah' && openStart !== null) {
-      windows.push({ start: openStart, end: new Date(item.date).getTime(), label: openLabel });
+      windows.push({
+        start: openStart,
+        end: new Date(item.date).getTime(),
+        label: openLabel,
+        closingLabel: openClosingLabel,
+      });
       openStart = null;
       openLabel = '';
+      openClosingLabel = '';
+      lastHolidayLabel = null;
     }
   }
 
@@ -82,7 +113,7 @@ export async function fetchWindows(latitude: number, longitude: number): Promise
   ])) as [HebcalResponse, HebcalResponse];
 
   const windows = [
-    ...pairWindows(shabbatData.items ?? []),
+    ...pairWindows(shabbatData.items ?? [], { label: SHABBAT_LABEL, closingLabel: SHABBAT_CLOSING_LABEL }),
     ...pairWindows(holidayData.items ?? []),
   ];
 

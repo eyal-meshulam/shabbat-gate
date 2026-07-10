@@ -37,6 +37,28 @@ const gate = createShabbatGate({ siteName: 'My Site' });
 export const onRequest: PagesFunction = (context) => gate(context);
 ```
 
+### Using with a plain Worker + Assets binding (not Pages)
+
+`createShabbatGate` returns a Pages-Functions-shaped handler (`(context) => Response`), so
+adapting it to a plain Worker's `fetch(request, env)` signature takes a small wrapper - see
+`worker.ts` in a consuming repo for the shape.
+
+**Gotcha that silently defeats the whole gate:** a Cloudflare Worker with an `assets` binding
+serves any request matching a file in the assets directory *directly*, without invoking the
+Worker's `fetch` handler at all - unless `run_worker_first: true` is set. Without it, the gate
+code runs and looks correctly wired up, tests pass, but real page requests (which almost always
+match a static asset) never reach it, so the site never actually closes. In `wrangler.jsonc`:
+
+```jsonc
+{
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  }
+}
+```
+
 ## Config
 
 ```ts
@@ -55,8 +77,15 @@ export interface ShabbatGateConfig {
   bypassValue?: string;
 
   /** Optional custom holding-page renderer. Defaults to a Hebrew, mobile-responsive
-   *  page showing siteName and when the site reopens. */
-  renderHoldingPage?: (ctx: { siteName: string; reasonLabel: string; untilLabel: string }) => string;
+   *  page showing siteName and when the site reopens. `reasonLabel` and `closingLabel`
+   *  differ grammatically for plain Shabbat ("שבת קודש" opening vs. "השבת" closing) -
+   *  use `closingLabel` for "back after ___", not `reasonLabel` again. */
+  renderHoldingPage?: (ctx: {
+    siteName: string;
+    reasonLabel: string;
+    closingLabel: string;
+    untilLabel: string;
+  }) => string;
 }
 ```
 

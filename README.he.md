@@ -37,6 +37,28 @@ const gate = createShabbatGate({ siteName: 'שם האתר שלי' });
 export const onRequest: PagesFunction = (context) => gate(context);
 ```
 
+### שימוש עם Worker רגיל + assets binding (לא Pages)
+
+`createShabbatGate` מחזירה handler בצורה של Pages Functions (`(context) => Response`), כך
+שהתאמה ל-signature של `fetch(request, env)` של Worker רגיל דורשת עטיפה קטנה - ראו `worker.ts`
+בפרויקט צרכן כדוגמה לצורה.
+
+**מוקש שמבטל את כל השער בשקט:** Cloudflare Worker עם `assets` binding מגיש כל בקשה שתואמת
+קובץ בתיקיית ה-assets **ישירות**, בלי להריץ בכלל את ה-`fetch` handler של ה-Worker - אלא אם
+מגדירים `run_worker_first: true`. בלי זה, קוד השער רץ ונראה מחובר נכון, הבדיקות עוברות, אבל
+בקשות אמיתיות לעמודים (שכמעט תמיד תואמות קובץ סטטי) אף פעם לא מגיעות אליו, אז האתר בפועל
+אף פעם לא נסגר. ב-`wrangler.jsonc`:
+
+```jsonc
+{
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  }
+}
+```
+
 ## קונפיגורציה
 
 ```ts
@@ -55,8 +77,15 @@ export interface ShabbatGateConfig {
   bypassValue?: string;
 
   /** פונקציית רינדור מותאמת אישית לדף ה"סגור", אופציונלית. ברירת המחדל היא דף בעברית,
-   *  רספונסיבי למובייל, שמציג את שם האתר ומתי הוא ייפתח מחדש. */
-  renderHoldingPage?: (ctx: { siteName: string; reasonLabel: string; untilLabel: string }) => string;
+   *  רספונסיבי למובייל, שמציג את שם האתר ומתי הוא ייפתח מחדש. `reasonLabel` ו-`closingLabel`
+   *  שונים דקדוקית עבור שבת רגילה ("שבת קודש" בפתיחה מול "השבת" בסגירה) - יש להשתמש
+   *  ב-`closingLabel` עבור "ניפגש שוב אחרי ___", לא לחזור על `reasonLabel`. */
+  renderHoldingPage?: (ctx: {
+    siteName: string;
+    reasonLabel: string;
+    closingLabel: string;
+    untilLabel: string;
+  }) => string;
 }
 ```
 
