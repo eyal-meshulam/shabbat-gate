@@ -1,0 +1,24 @@
+# build output
+dist/
+
+# dependencies
+node_modules/
+
+# stray MCP server log (locked by a running process, harmless)
+sefaria_jewish_library.log
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# environment variables
+.env
+.env.production
+
+# macOS-specific files
+.DS_Store
+
+# jetbrains setting folder
+.idea/
