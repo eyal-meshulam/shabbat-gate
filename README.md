@@ -1,5 +1,7 @@
 # shabbat-gate
 
+[קריאה בעברית](README.he.md)
+
 Cloudflare Pages / Workers middleware that automatically closes a site to human visitors
 during Shabbat and major Jewish holidays (Israel-observance rules) - while always letting
 search engines and AI crawlers through, so SEO stays unaffected.

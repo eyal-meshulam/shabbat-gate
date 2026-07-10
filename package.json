@@ -1,6 +1,6 @@
 {
   "name": "shabbat-gate",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cloudflare Pages/Workers middleware that closes a site to human visitors during Shabbat and major Jewish holidays (Israel-observance rules), while always letting search engines and AI crawlers through.",
   "type": "module",
   "main": "./dist/index.js",
@@ -8,6 +8,7 @@
   "files": [
     "dist",
     "README.md",
+    "README.he.md",
     "LICENSE"
   ],
   "scripts": {
