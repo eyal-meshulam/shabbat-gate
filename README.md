@@ -146,6 +146,11 @@ The merged window list is cached under a fixed internal key
 your own buffer applied) via `caches.default`, use a different key - reusing this one will
 silently serve stale, unprocessed data for up to 24h.
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each release, including root-cause
+explanations for fixed bugs.
+
 ## License
 
 MIT

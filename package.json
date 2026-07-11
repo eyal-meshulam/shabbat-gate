@@ -9,6 +9,7 @@
     "dist",
     "README.md",
     "README.he.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
