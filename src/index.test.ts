@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createShabbatGate } from './index.js';
+import { createShabbatGate, createShabbatGateForWorker } from './index.js';
 
 function fakeCache() {
   const store = new Map<string, Response>();
@@ -16,8 +16,9 @@ function makeContext(request: Request) {
   return { context: { request, next } as unknown as Parameters<ReturnType<typeof createShabbatGate>>[0], next };
 }
 
-// Both events must live in the same `items` array to pair into one window -
-// Hebcal's shabbat endpoint returns candles + havdalah together for the same week.
+// A single merged `items` array, as returned by the one `/hebcal` call
+// fetchWindows now makes - candles + havdalah for the same week pair into
+// one window regardless of what else is mixed in around them.
 const OPEN_WINDOW_ITEMS = [
   { title: 'Candle lighting', date: '2020-01-01T00:00:00.000Z', category: 'candles' },
   { title: 'Havdalah', date: '2099-01-01T00:00:00.000Z', category: 'havdalah' },
@@ -48,9 +49,8 @@ describe('createShabbatGate', () => {
   });
 
   it('lets the request through when the bypass param matches, even inside an open window', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
-      const items = String(url).includes('/shabbat?') ? OPEN_WINDOW_ITEMS : [];
-      return new Response(JSON.stringify({ items }), { status: 200 });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify({ items: OPEN_WINDOW_ITEMS }), { status: 200 });
     });
 
     const gate = createShabbatGate({
@@ -67,9 +67,8 @@ describe('createShabbatGate', () => {
   });
 
   it('does not bypass, and still shows the holding page, with a missing or wrong bypass value', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
-      const items = String(url).includes('/shabbat?') ? OPEN_WINDOW_ITEMS : [];
-      return new Response(JSON.stringify({ items }), { status: 200 });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify({ items: OPEN_WINDOW_ITEMS }), { status: 200 });
     });
 
     const gate = createShabbatGate({
@@ -103,9 +102,8 @@ describe('createShabbatGate', () => {
   });
 
   it('serves the holding page when now falls inside an open window', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
-      const items = String(url).includes('/shabbat?') ? OPEN_WINDOW_ITEMS : [];
-      return new Response(JSON.stringify({ items }), { status: 200 });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify({ items: OPEN_WINDOW_ITEMS }), { status: 200 });
     });
 
     const gate = createShabbatGate({ siteName: 'Test Site' });
@@ -116,5 +114,90 @@ describe('createShabbatGate', () => {
     expect(next).not.toHaveBeenCalled();
     expect(response.status).toBe(200);
     expect(await response.text()).toContain('Test Site');
+  });
+});
+
+// A window that opens 5 minutes from now - not yet active on its own, but
+// should be treated as active once a bufferMinutes safety margin is applied.
+const UPCOMING_WINDOW_ITEMS = [
+  { title: 'Candle lighting', date: new Date(Date.now() + 5 * 60_000).toISOString(), category: 'candles' },
+  { title: 'Havdalah', date: new Date(Date.now() + 24 * 60 * 60_000).toISOString(), category: 'havdalah' },
+];
+
+describe('bufferMinutes', () => {
+  beforeEach(() => {
+    // @ts-expect-error - test-only global stub for the Workers Cache API
+    globalThis.caches = { default: fakeCache() };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify({ items: UPCOMING_WINDOW_ITEMS }), { status: 200 });
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('does not block before the window when bufferMinutes is omitted', async () => {
+    const gate = createShabbatGate({ siteName: 'Test Site' });
+    const { context, next } = makeContext(new Request('https://example.com/'));
+
+    await gate(context);
+
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('blocks a few minutes before the window when bufferMinutes is set', async () => {
+    const gate = createShabbatGate({ siteName: 'Test Site', bufferMinutes: 10 });
+    const { context, next } = makeContext(new Request('https://example.com/'));
+
+    const response = await gate(context);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+  });
+});
+
+describe('createShabbatGateForWorker', () => {
+  beforeEach(() => {
+    // @ts-expect-error - test-only global stub for the Workers Cache API
+    globalThis.caches = { default: fakeCache() };
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns null (let the real site through) outside any window', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ items: [] }), { status: 200 }));
+
+    const gate = createShabbatGateForWorker({ siteName: 'Test Site' });
+    const result = await gate(new Request('https://example.com/'));
+
+    expect(result).toBeNull();
+  });
+
+  it('returns a holding-page Response when now falls inside an open window', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify({ items: OPEN_WINDOW_ITEMS }), { status: 200 });
+    });
+
+    const gate = createShabbatGateForWorker({ siteName: 'Test Site' });
+    const result = await gate(new Request('https://example.com/'));
+
+    expect(result).not.toBeNull();
+    expect(result?.status).toBe(200);
+    expect(await result?.text()).toContain('Test Site');
+  });
+
+  it('fails open (returns null) when the Hebcal fetch throws', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      throw new Error('network down');
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const gate = createShabbatGateForWorker({ siteName: 'Test Site' });
+    const result = await gate(new Request('https://example.com/'));
+
+    expect(result).toBeNull();
   });
 });

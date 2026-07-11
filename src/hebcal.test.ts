@@ -33,7 +33,13 @@ describe('pairWindows', () => {
   it('uses the given defaults for a plain Shabbat window (no holiday item nearby)', () => {
     const windows = pairWindows(
       [
-        { title: 'Candle lighting', hebrew: 'הדלקת נרות', date: '2026-08-14T18:52:00', category: 'candles' },
+        {
+          title: 'Candle lighting',
+          hebrew: 'הדלקת נרות',
+          date: '2026-08-14T18:52:00',
+          category: 'candles',
+          memo: 'Parashat Re\'eh',
+        },
         { title: 'Havdalah', hebrew: 'הבדלה', date: '2026-08-15T19:48:00', category: 'havdalah' },
       ],
       { label: 'שבת קודש', closingLabel: 'השבת' },
@@ -49,11 +55,17 @@ describe('pairWindows', () => {
     ]);
   });
 
-  it('uses the holiday item\'s own Hebrew name instead of the generic candle-lighting text', () => {
+  it('uses the matching holiday item\'s own Hebrew name instead of the generic candle-lighting text', () => {
     const windows = pairWindows(
       [
         { title: 'Erev Rosh Hashana', hebrew: 'ערב ראש השנה', date: '2026-09-11', category: 'holiday' },
-        { title: 'Candle lighting', hebrew: 'הדלקת נרות', date: '2026-09-11T18:10:00', category: 'candles' },
+        {
+          title: 'Candle lighting',
+          hebrew: 'הדלקת נרות',
+          date: '2026-09-11T18:10:00',
+          category: 'candles',
+          memo: 'Erev Rosh Hashana',
+        },
         { title: 'Havdalah', hebrew: 'הבדלה', date: '2026-09-13T19:24:00', category: 'havdalah' },
       ],
       { label: 'שבת קודש', closingLabel: 'השבת' },
@@ -61,6 +73,32 @@ describe('pairWindows', () => {
 
     expect(windows[0].label).toBe('ערב ראש השנה');
     expect(windows[0].closingLabel).toBe('ערב ראש השנה');
+  });
+
+  it('does not leak a fast day\'s holiday label into the next, unrelated Shabbat window', () => {
+    // Regression test: Tish'a B'Av is `holiday`-category (maj=on) but has no
+    // candle-lighting of its own - naively tracking "last holiday label
+    // seen" would wrongly attach its name to the following week's ordinary
+    // Shabbat, which has no `memo` match for it.
+    const windows = pairWindows(
+      [
+        { title: 'Erev Tish’a B’Av', hebrew: 'ערב תשעה באב', date: '2026-07-22', category: 'holiday' },
+        { title: 'Tish’a B’Av', hebrew: 'תשעה באב', date: '2026-07-23', category: 'holiday' },
+        {
+          title: 'Candle lighting',
+          hebrew: 'הדלקת נרות',
+          date: '2026-07-24T19:01:00',
+          category: 'candles',
+          memo: 'Parashat Vaetchanan',
+        },
+        { title: 'Havdalah', hebrew: 'הבדלה', date: '2026-07-25T20:02:00', category: 'havdalah' },
+      ],
+      { label: 'שבת קודש', closingLabel: 'השבת' },
+    );
+
+    expect(windows).toHaveLength(1);
+    expect(windows[0].label).toBe('שבת קודש');
+    expect(windows[0].closingLabel).toBe('השבת');
   });
 
   it('produces multiple independent windows across unrelated events', () => {

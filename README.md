@@ -39,9 +39,23 @@ export const onRequest: PagesFunction = (context) => gate(context);
 
 ### Using with a plain Worker + Assets binding (not Pages)
 
-`createShabbatGate` returns a Pages-Functions-shaped handler (`(context) => Response`), so
-adapting it to a plain Worker's `fetch(request, env)` signature takes a small wrapper - see
-`worker.ts` in a consuming repo for the shape.
+`createShabbatGate` returns a Pages-Functions-shaped handler (`(context) => Response`), which
+doesn't fit a plain Worker's `fetch(request, env)` signature (there's no `next()`). Use
+`createShabbatGateForWorker` instead - it returns `null` for "let the real site through" and a
+`Response` for "serve the holding page":
+
+```ts
+import { createShabbatGateForWorker } from 'shabbat-gate';
+
+const gate = createShabbatGateForWorker({ siteName: 'My Site' });
+
+export default {
+  async fetch(request: Request, env: { ASSETS: Fetcher }) {
+    const blocked = await gate(request);
+    return blocked ?? env.ASSETS.fetch(request);
+  },
+};
+```
 
 **Gotcha that silently defeats the whole gate:** a Cloudflare Worker with an `assets` binding
 serves any request matching a file in the assets directory *directly*, without invoking the
@@ -86,6 +100,11 @@ export interface ShabbatGateConfig {
     closingLabel: string;
     untilLabel: string;
   }) => string;
+
+  /** Minutes to close the site *before* candle-lighting and reopen *after*
+   *  havdalah, on top of the raw Hebcal window. Defaults to 0. Useful padding
+   *  against clock drift / last-minute browsing right at the boundary. */
+  bufferMinutes?: number;
 }
 ```
 
@@ -100,6 +119,7 @@ const gate = createShabbatGate({
   longitude: 35.2137,
   bypassParam: 'preview',
   bypassValue: 'letmein-9f3a7c',
+  bufferMinutes: 10,
 });
 
 export const onRequest: PagesFunction = (context) => gate(context);
@@ -110,10 +130,21 @@ export const onRequest: PagesFunction = (context) => gate(context);
 1. Bot check (allowlist regex on the `user-agent` header) - matches pass straight through.
 2. Bypass check - if the bypass query param + value match, pass straight through.
 3. Fetch (with ~24h caching via the Workers Cache API) the merged list of Shabbat and major
-   holiday windows from Hebcal, ~45 days into the future.
-4. If the current time falls inside a window, serve the holding page (HTTP 200). Otherwise let
+   holiday windows from Hebcal, ~45 days into the future - one call to Hebcal's `/hebcal`
+   endpoint (`ss=on` for weekly Shabbat + `maj=on` for major holidays), passing `latitude`/
+   `longitude` directly so every window is correctly localized, not just the nearest one.
+4. `bufferMinutes` (if set) is applied on top of the fetched windows before the time check.
+5. If the current time falls inside a window, serve the holding page (HTTP 200). Otherwise let
    the real site through.
-5. Any error along the way falls through to the real site.
+6. Any error along the way falls through to the real site.
+
+## Internal cache key
+
+The merged window list is cached under a fixed internal key
+(`https://internal.cache/shabbat-gate-windows-v1`, exported as `INTERNAL_CACHE_KEY_URL`) for
+~24h via the Workers Cache API. If your own code also caches derived data (e.g. windows with
+your own buffer applied) via `caches.default`, use a different key - reusing this one will
+silently serve stale, unprocessed data for up to 24h.
 
 ## License
 

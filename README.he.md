@@ -39,9 +39,23 @@ export const onRequest: PagesFunction = (context) => gate(context);
 
 ### שימוש עם Worker רגיל + assets binding (לא Pages)
 
-`createShabbatGate` מחזירה handler בצורה של Pages Functions (`(context) => Response`), כך
-שהתאמה ל-signature של `fetch(request, env)` של Worker רגיל דורשת עטיפה קטנה - ראו `worker.ts`
-בפרויקט צרכן כדוגמה לצורה.
+`createShabbatGate` מחזירה handler בצורה של Pages Functions (`(context) => Response`), וזה
+לא מתאים ל-signature של `fetch(request, env)` של Worker רגיל (אין `next()`). במקום זאת יש
+להשתמש ב-`createShabbatGateForWorker` - היא מחזירה `null` כשצריך לתת לאתר האמיתי לעבור, ו-
+`Response` כשצריך להציג את דף ה"סגור":
+
+```ts
+import { createShabbatGateForWorker } from 'shabbat-gate';
+
+const gate = createShabbatGateForWorker({ siteName: 'שם האתר שלי' });
+
+export default {
+  async fetch(request: Request, env: { ASSETS: Fetcher }) {
+    const blocked = await gate(request);
+    return blocked ?? env.ASSETS.fetch(request);
+  },
+};
+```
 
 **מוקש שמבטל את כל השער בשקט:** Cloudflare Worker עם `assets` binding מגיש כל בקשה שתואמת
 קובץ בתיקיית ה-assets **ישירות**, בלי להריץ בכלל את ה-`fetch` handler של ה-Worker - אלא אם
@@ -86,6 +100,11 @@ export interface ShabbatGateConfig {
     closingLabel: string;
     untilLabel: string;
   }) => string;
+
+  /** דקות לסגור את האתר *לפני* הדלקת נרות ולפתוח אותו *אחרי* הבדלה, מעל החלון הגולמי
+   *  מ-Hebcal. ברירת מחדל: 0. שימושי כרפידת בטחון מול סחיפת שעון / גלישה של הרגע
+   *  האחרון בדיוק בגבול החלון. */
+  bufferMinutes?: number;
 }
 ```
 
@@ -100,6 +119,7 @@ const gate = createShabbatGate({
   longitude: 35.2137,
   bypassParam: 'preview',
   bypassValue: 'letmein-9f3a7c',
+  bufferMinutes: 10,
 });
 
 export const onRequest: PagesFunction = (context) => gate(context);
@@ -110,9 +130,20 @@ export const onRequest: PagesFunction = (context) => gate(context);
 1. בדיקת בוט (regex אלוול על header ה-`user-agent`) - התאמה עוברת ישירות.
 2. בדיקת bypass - אם פרמטר ה-query וערכו תואמים, עוברים ישירות.
 3. שליפה (עם caching לכ-24 שעות דרך Workers Cache API) של רשימת חלונות שבת וחגים
-   מאוחדת מ-Hebcal, כ-45 יום קדימה.
-4. אם הזמן הנוכחי נופל בתוך חלון, מוצג דף ה"סגור" (HTTP 200). אחרת, האתר האמיתי עובר.
-5. כל שגיאה בדרך גורמת למעבר לאתר האמיתי.
+   מאוחדת מ-Hebcal, כ-45 יום קדימה - קריאה אחת ל-endpoint `/hebcal` (`ss=on` לשבתות
+   שבועיות + `maj=on` לחגים מרכזיים), עם `latitude`/`longitude` מועברים ישירות, כך שכל
+   חלון מחושב נכון למיקום שהוגדר, לא רק החלון הקרוב ביותר.
+4. אם הוגדר `bufferMinutes`, הוא מוחל מעל החלונות שנשלפו לפני בדיקת הזמן.
+5. אם הזמן הנוכחי נופל בתוך חלון, מוצג דף ה"סגור" (HTTP 200). אחרת, האתר האמיתי עובר.
+6. כל שגיאה בדרך גורמת למעבר לאתר האמיתי.
+
+## מפתח קאש פנימי
+
+רשימת החלונות המאוחדת נשמרת בקאש תחת מפתח פנימי קבוע
+(`https://internal.cache/shabbat-gate-windows-v1`, מיוצא בשם `INTERNAL_CACHE_KEY_URL`) לכ-24
+שעות דרך Workers Cache API. אם הקוד שלכם עושה caching משלו לנתונים נגזרים (למשל חלונות עם
+buffer משלכם), כדאי להשתמש במפתח אחר - שימוש חוזר במפתח הזה יגרום בשקט להחזרת נתונים ישנים
+ולא-מעובדים למשך עד 24 שעות.
 
 ## רישיון
 

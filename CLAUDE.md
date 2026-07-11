@@ -253,3 +253,72 @@ what actually gets published (just `dist/` + `README.md` + `LICENSE`).
 Once published, integrating into `tehilagames.com` means: `npm install shabbat-gate` there, add
 a `functions/_middleware.ts` calling `createShabbatGate({...})`, test with the bypass param on
 the live preview URL, then deploy for real. That's a separate task in that project's own session.
+
+---
+
+## Real-world gaps found via first live consumer (0587178899.com, 2026-07-10) - fix on a feature branch
+
+The package got its first real deployment on 2026-07-10, on `0587178899.com` (a plain Cloudflare
+Worker + static Assets site, not Pages Functions). Two real bugs were found and fixed live that
+evening (session details in that repo's own memory, not reproduced here); one is already fixed at
+the source (this repo), one was a platform config gotcha (fixed in the consumer, documented in our
+README). On top of those, the consumer's `worker.ts` had to work around **two real gaps in this
+package's public API** that were never a "bug" exactly, just missing functionality this session
+didn't anticipate. Eyal asked (2026-07-12) for a fresh session here to pick these up **on a new
+feature branch** (don't commit straight to `master`), fix them properly at the source, and leave
+them ready for him to review before any `npm publish`.
+
+**Before writing code: create a feature branch** (e.g. `git checkout -b feature/buffer-and-workers-adapter`).
+
+### 1. No native safety-buffer/offset config option
+
+`ShabbatGateConfig` has no way to close the site a few minutes *before* candle-lighting or reopen
+a few minutes *after* havdalah - real clock drift and last-minute browsing near the boundary are a
+real concern for a site owner who explicitly doesn't want any business done during Shabbat. The
+consumer worked around this by not calling `createShabbatGate()` at all: it re-imported
+`fetchWindows`/`findActiveWindow` directly and post-processed the returned windows with a
+hand-rolled `BUFFER_MS` (10 minutes) added to `start` / subtracted... actually added after `end`.
+That means the consumer lost `createShabbatGate()`'s built-in try/catch fail-open wrapper and had
+to reimplement it.
+
+**Fix**: add an optional config field, e.g. `bufferMinutes?: number` (default `0`), applied inside
+`createShabbatGate()` itself (subtract from each window's `start`, add to each window's `end`
+before calling `findActiveWindow`). Add unit tests: a `now` a few minutes before a window's real
+start should be blocked when `bufferMinutes` is set, and shouldn't be when it's `0`/omitted.
+
+### 2. No adapter for plain Cloudflare Workers (only Pages Functions)
+
+`createShabbatGate()` returns a `PagesFunction` (expects `{ request, next }`). A site that's a
+plain Worker with a static-assets binding (not Pages Functions) has no `next()` - it has to
+compose the gate from this package's exported building blocks (`isBot`, `fetchWindows`,
+`findActiveWindow`) by hand inside its own `fetch` handler, redoing the caching/try-catch/bypass
+logic that `createShabbatGate()` already has. This is exactly what `0587178899.com`'s `worker.ts`
+had to do, and it's the kind of duplication that will bite the next consumer that isn't on Pages
+Functions too.
+
+**Fix**: add a second exported factory that returns a plain `(request: Request) => Promise<Response | null>` -
+returning `null` (or some sentinel) means "let the real site through," a `Response` means "serve
+the holding page." Something like:
+
+```ts
+export function createShabbatGateForWorker(config: ShabbatGateConfig):
+  (request: Request) => Promise<Response | null>
+```
+
+Ideally implement both `createShabbatGate` and `createShabbatGateForWorker` as thin wrappers around
+one shared internal function so the buffer/bypass/caching/fail-open logic isn't duplicated between
+them. Add a Worker+Assets usage example to `README.md`/`README.he.md` alongside the existing Pages
+Functions example, and mention the `assets.run_worker_first: true` requirement right next to it
+(the README section that already documents that gotcha from the earlier bug should cross-reference
+this new example).
+
+### 3. Reminders, not code changes
+
+- **`npm publish` for 0.1.2 is still pending** - Eyal explicitly said "not now, remind me next time"
+  on 2026-07-10. Ask him before publishing anything. If this session also ships the buffer +
+  Workers-adapter fixes above, it's natural to bump to **0.1.3** and ask about publishing both
+  0.1.2's and 0.1.3's changes together in one publish, rather than two separate publishes.
+- Once 0.1.2+ is actually published and `0587178899.com` upgrades its dependency, that site's
+  `worker.ts` has a temporary hardcoded-Hebrew-text stopgap (bypassing `defaultRenderHoldingPage`)
+  that should be reverted - not this repo's job to do, just context for why the consumer's code
+  looks slightly redundant with this package right now.
