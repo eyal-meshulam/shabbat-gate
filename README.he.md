@@ -37,6 +37,35 @@ const gate = createShabbatGate({ siteName: 'שם האתר שלי' });
 export const onRequest: PagesFunction = (context) => gate(context);
 ```
 
+### כשכבר קיים `functions/_middleware` באתר
+
+Cloudflare Pages מריץ **קובץ middleware אחד בלבד** בשורש `functions/`. אם קיימים שניים
+(`_middleware.js` **וגם** `_middleware.ts`), Cloudflare בוחר אחד בשקט והשני פשוט לא רץ - בלי
+שגיאה, בלי אזהרה. לכן **אין ליצור קובץ שני**. `gate` קורא בעצמו ל-`context.next()`, כלומר הוא
+כבר primitive שמשתלב בשרשרת: מייצאים את ה-`onRequest` בשורש כ**מערך** של handlers,
+ו-Cloudflare מריץ אותם לפי הסדר כשכל אחד קורא `next()`. לדוגמה, שרשור שומר-noindex לפריוויו
+לפני השער:
+
+```js
+import { createShabbatGate } from 'shabbat-gate';
+
+const PROD_HOSTS = new Set(['example.com', 'www.example.com']);
+
+const noindex = async ({ request, next }) => {
+  const res = await next();
+  if (PROD_HOSTS.has(new URL(request.url).hostname)) return res;
+  const tagged = new Response(res.body, res);
+  tagged.headers.set('X-Robots-Tag', 'noindex, nofollow');
+  return tagged;
+};
+
+const gate = createShabbatGate({ siteName: 'שם האתר שלי' });
+
+export const onRequest = [noindex, (context) => gate(context)];
+```
+
+אין צורך לעטוף `next()` ידנית - השער משתלב בשרשרת כמו שהוא.
+
 ### שימוש עם Worker רגיל + assets binding (לא Pages)
 
 `createShabbatGate` מחזירה handler בצורה של Pages Functions (`(context) => Response`), וזה

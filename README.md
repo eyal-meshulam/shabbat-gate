@@ -37,6 +37,35 @@ const gate = createShabbatGate({ siteName: 'My Site' });
 export const onRequest: PagesFunction = (context) => gate(context);
 ```
 
+### When the site already has a `functions/_middleware`
+
+Cloudflare Pages runs **only one** middleware file at the root of `functions/`. If two exist
+(`_middleware.js` **and** `_middleware.ts`), Cloudflare silently picks one and the other never
+runs - no error, no warning. So **do not add a second file**. `gate` calls `context.next()`
+itself, which means it is already a composable middleware primitive: export the root
+`onRequest` as an **array** of handlers and Cloudflare runs them in order, each calling
+`next()`. For example, chaining a preview-noindex guard before the gate:
+
+```js
+import { createShabbatGate } from 'shabbat-gate';
+
+const PROD_HOSTS = new Set(['example.com', 'www.example.com']);
+
+const noindex = async ({ request, next }) => {
+  const res = await next();
+  if (PROD_HOSTS.has(new URL(request.url).hostname)) return res;
+  const tagged = new Response(res.body, res);
+  tagged.headers.set('X-Robots-Tag', 'noindex, nofollow');
+  return tagged;
+};
+
+const gate = createShabbatGate({ siteName: 'My Site' });
+
+export const onRequest = [noindex, (context) => gate(context)];
+```
+
+No manual `next()` wrapping is needed - the gate participates in the chain as-is.
+
 ### Using with a plain Worker + Assets binding (not Pages)
 
 `createShabbatGate` returns a Pages-Functions-shaped handler (`(context) => Response`), which
