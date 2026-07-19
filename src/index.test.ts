@@ -244,6 +244,45 @@ describe('enforceVisitorLocation', () => {
   });
 });
 
+describe('geonameid (exact city times, e.g. Haifa)', () => {
+  beforeEach(() => {
+    // @ts-expect-error - test-only global stub for the Workers Cache API
+    globalThis.caches = { default: fakeCache() };
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('queries Hebcal by geonameid (not lat/long) when geonameid is set', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () => new Response(JSON.stringify({ items: [] }), { status: 200 }),
+    );
+
+    const gate = createShabbatGate({ siteName: 'Test Site', geonameid: 294801 });
+    const { context } = makeContext(new Request('https://example.com/'));
+    await gate(context);
+
+    const url = String(fetchSpy.mock.calls[0][0]);
+    expect(url).toContain('geonameid=294801');
+    expect(url).not.toContain('latitude=');
+  });
+
+  it('falls back to lat/long in the query when geonameid is omitted', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () => new Response(JSON.stringify({ items: [] }), { status: 200 }),
+    );
+
+    const gate = createShabbatGate({ siteName: 'Test Site' });
+    const { context } = makeContext(new Request('https://example.com/'));
+    await gate(context);
+
+    const url = String(fetchSpy.mock.calls[0][0]);
+    expect(url).toContain('latitude=');
+    expect(url).not.toContain('geonameid=');
+  });
+});
+
 describe('localized secondary message for visitors abroad', () => {
   beforeEach(() => {
     // @ts-expect-error - test-only global stub for the Workers Cache API

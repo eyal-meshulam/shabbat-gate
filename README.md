@@ -80,9 +80,17 @@ export interface ShabbatGateConfig {
   siteName: string;
 
   /** Decimal lat/long for zmanim. Both default to Jerusalem (31.7683, 35.2137) if
-   *  omitted - a fine single reference point for all of Israel at this granularity. */
+   *  omitted - a fine single reference point for all of Israel at this granularity.
+   *  Ignored when `geonameid` is set. */
   latitude?: number;
   longitude?: number;
+
+  /** Hebcal geonameid of the site's home city. When set, the base Shabbat/holiday times use
+   *  Hebcal's *official* times for that city instead of sunset-minus-default at raw coordinates
+   *  (they can differ - e.g. Haifa `294801` lights ~10 min earlier than its bare lat/long).
+   *  `latitude`/`longitude` are ignored when set. Does not affect `enforceVisitorLocation`.
+   *  Jerusalem=281184, Haifa=294801, Tel Aviv=293397, Beer Sheva=295530. */
+  geonameid?: number;
 
   /** Query param name + required value that bypasses the gate entirely, so the site
    *  owner can preview/test on any day. Keep the value non-guessable - this is a

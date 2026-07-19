@@ -3,7 +3,22 @@
 All notable changes to this package are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.2.1] - Unreleased
+## [0.3.0] - Unreleased
+
+### Added
+
+- `ShabbatGateConfig.geonameid` (and `FetchWindowsOptions.geonameid`) - set the site's home city
+  by Hebcal geonameid instead of `latitude`/`longitude`, so the base Shabbat/holiday times come
+  out at Hebcal's *official* times for that city. This matters because a city's official
+  candle-lighting can differ from a raw sunset-minus-default computation at the same coordinates:
+  e.g. Haifa (`294801`) lights ~10 minutes earlier than its bare lat/long - a real gap for a
+  Shabbat-observant site owner. When set, `latitude`/`longitude` are ignored for the base window
+  (and the internal cache key is namespaced by the geonameid so switching location doesn't serve
+  stale coordinate-based windows). Does not affect `enforceVisitorLocation` - visitor windows
+  always come from the visitor's `request.cf` coordinates. Common Israeli IDs: Jerusalem=281184,
+  Haifa=294801, Tel Aviv=293397, Beer Sheva=295530.
+
+## [0.2.1] - 2026-07-19
 
 ### Fixed
 

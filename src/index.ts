@@ -14,9 +14,19 @@ export { defaultRenderHoldingPage } from './holdingPage.js';
 export interface ShabbatGateConfig {
   siteName: string;
   /** Decimal lat/long for zmanim. Both default to Jerusalem if omitted - a fine
-   *  single reference point for all of Israel at this granularity. */
+   *  single reference point for all of Israel at this granularity. Ignored when
+   *  `geonameid` is set. */
   latitude?: number;
   longitude?: number;
+  /** Hebcal geonameid of the site's home city. When set, the site's own
+   *  Shabbat/holiday times come from Hebcal's *official* times for that city
+   *  (rather than sunset-minus-default at raw coordinates), and `latitude`/
+   *  `longitude` are ignored for the base window. Preferred over lat/long when
+   *  you want a specific Israeli city exactly - e.g. Haifa (`294801`) lights
+   *  ~10 min earlier than its bare coordinates. Jerusalem=281184, Haifa=294801,
+   *  Tel Aviv=293397, Beer Sheva=295530. Does not affect `enforceVisitorLocation`
+   *  (visitor windows always come from the visitor's `request.cf` coordinates). */
+  geonameid?: number;
   /** Query param name + required value that bypasses the gate entirely, for
    *  the site owner to preview/test on any day. Keep the value non-guessable -
    *  this is a testing convenience, not real auth. */
@@ -109,9 +119,16 @@ function readVisitorLocation(request: Request): VisitorLocation | null {
   return { latitude, longitude, tzid, israelMode: cf.country === 'IL' };
 }
 
-/** Israel/Jerusalem windows - the base gate, always computed. */
-function getIsraelWindows(latitude: number, longitude: number): Promise<Window[]> {
-  return getCachedWindows(INTERNAL_CACHE_KEY_URL, () => fetchWindows(latitude, longitude));
+/** Israel windows - the base gate, always computed. When `geonameid` is set the
+ *  site's own times come from Hebcal's official city times (and the cache key is
+ *  namespaced by it so switching location doesn't serve stale coordinate-based
+ *  windows for up to 24h). */
+function getIsraelWindows(latitude: number, longitude: number, geonameid?: number): Promise<Window[]> {
+  const cacheKey =
+    geonameid != null ? `${INTERNAL_CACHE_KEY_URL}?geonameid=${geonameid}` : INTERNAL_CACHE_KEY_URL;
+  return getCachedWindows(cacheKey, () =>
+    fetchWindows(latitude, longitude, geonameid != null ? { geonameid } : {}),
+  );
 }
 
 /** Windows for a specific visitor location, cached per rounded cell. */
@@ -177,7 +194,10 @@ async function evaluateGate(config: ShabbatGateConfig, request: Request): Promis
     const visitor = readVisitorLocation(request);
     const isAbroad = visitor !== null && !visitor.israelMode;
 
-    let windows = applyBuffer(await getIsraelWindows(latitude, longitude), bufferMinutes);
+    let windows = applyBuffer(
+      await getIsraelWindows(latitude, longitude, config.geonameid),
+      bufferMinutes,
+    );
 
     if (config.enforceVisitorLocation && visitor) {
       const visitorWindows = applyBuffer(await getVisitorWindows(visitor), bufferMinutes);

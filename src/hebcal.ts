@@ -104,6 +104,15 @@ export interface FetchWindowsOptions {
    *  computing their local windows so day boundaries line up with their sunset,
    *  not Jerusalem's. */
   tzid?: string;
+  /** Hebcal geonameid of a specific city. When set, the query uses this city
+   *  instead of `latitude`/`longitude`, so candle-lighting/havdalah come out at
+   *  Hebcal's *official* times for that city - which can differ from a raw
+   *  sunset-minus-18-minutes computation at the same coordinates (e.g. Haifa,
+   *  geonameid 294801, lights ~10 min earlier than its bare lat/long). Use this
+   *  for the site's own reference location when you want the exact city time;
+   *  `latitude`/`longitude` are ignored when it is present. Jerusalem=281184,
+   *  Haifa=294801, Tel Aviv=293397, Beer Sheva=295530. */
+  geonameid?: number;
 }
 
 /**
@@ -137,14 +146,21 @@ export async function fetchWindows(
   const startParam = toISODate(start);
   const endParam = toISODate(end);
 
+  // A specific city (geonameid) yields Hebcal's official times for that city;
+  // otherwise fall back to raw coordinates (sunset-minus-default at that point).
+  const locationParam =
+    options.geonameid != null
+      ? `geonameid=${options.geonameid}`
+      : `latitude=${latitude}&longitude=${longitude}`;
+
   // i=on = Israel single-day Yom Tov reckoning; i=off = diaspora 2-day.
   // c=on = attach candles/havdalah entries to holidays, not just bare dates.
-  // ss=on = weekly Shabbat candle-lighting/havdalah, localized to lat/long.
+  // ss=on = weekly Shabbat candle-lighting/havdalah, localized to the location.
   // maj=on + everything else off = only real work-restricted Yom Tov days.
   const iParam = israelMode ? 'on' : 'off';
   const url =
     `https://www.hebcal.com/hebcal?cfg=json&v=1&maj=on&min=off&mod=off&nx=off&mf=off&ss=on` +
-    `&c=on&i=${iParam}&latitude=${latitude}&longitude=${longitude}&tzid=${encodeURIComponent(tzid)}` +
+    `&c=on&i=${iParam}&${locationParam}&tzid=${encodeURIComponent(tzid)}` +
     `&start=${startParam}&end=${endParam}`;
 
   const res = await fetch(url);
