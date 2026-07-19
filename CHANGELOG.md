@@ -3,7 +3,17 @@
 All notable changes to this package are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.2.0] - Unreleased
+## [0.2.1] - Unreleased
+
+### Fixed
+
+- README cross-links 404'd on the npm package page. The "קריאה בעברית" / "English README"
+  links and the CHANGELOG link were relative paths (`README.he.md`, `README.md`,
+  `CHANGELOG.md`); npm resolves those against `npmjs.com/package/`, not the GitHub repo, so they
+  led to a "package not found" page. Switched all four to absolute `github.com/...` URLs, which
+  work correctly on both npm and GitHub. (Docs-only change; no code affected.)
+
+## [0.2.0] - 2026-07-19
 
 ### Added
 

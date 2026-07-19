@@ -1,6 +1,6 @@
 # shabbat-gate
 
-[קריאה בעברית](README.he.md)
+[קריאה בעברית](https://github.com/eyal-meshulam/shabbat-gate/blob/master/README.he.md)
 
 Cloudflare Pages / Workers middleware that automatically closes a site to human visitors
 during Shabbat and major Jewish holidays (Israel-observance rules) - while always letting
@@ -186,7 +186,7 @@ silently serve stale, unprocessed data for up to 24h.
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for what changed in each release, including root-cause
+See [CHANGELOG.md](https://github.com/eyal-meshulam/shabbat-gate/blob/master/CHANGELOG.md) for what changed in each release, including root-cause
 explanations for fixed bugs.
 
 ## License
