@@ -3,7 +3,20 @@
 All notable changes to this package are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.3.0] - Unreleased
+## [0.3.1] - Unreleased
+
+### Documentation
+
+- Documented middleware **chaining** for Cloudflare Pages sites that already have a root
+  `functions/_middleware`. Cloudflare runs only one root middleware file - two (`_middleware.js`
+  **and** `_middleware.ts`) means one is silently ignored. Since `gate` already calls
+  `context.next()`, it composes as-is: export the root `onRequest` as an array
+  (`export const onRequest = [noindex, (context) => gate(context)]`) and Cloudflare runs them in
+  order. No code change - the gate was already a composable middleware primitive; this just adds
+  the README section (both languages) so consumers don't add a clashing second file. Found live
+  installing on eyalmeshulam.com (which already had a preview-noindex middleware).
+
+## [0.3.0] - 2026-07-19
 
 ### Added
 
