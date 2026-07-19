@@ -30,8 +30,8 @@ interface HebcalResponse {
  *  "הדלקת נרות"/"הבדלה" in their `hebrew` field, never the occasion name - so
  *  it's unusable as a display label on its own. For a plain Shabbat week
  *  (no accompanying `holiday` item), fall back to this fixed pair instead. */
-const SHABBAT_LABEL = 'שבת קודש';
-const SHABBAT_CLOSING_LABEL = 'השבת';
+export const SHABBAT_LABEL = 'שבת קודש';
+export const SHABBAT_CLOSING_LABEL = 'השבת';
 
 /**
  * Pairs candles/havdalah events into continuous windows. Multi-day holidays
@@ -92,9 +92,25 @@ function toISODate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+export interface FetchWindowsOptions {
+  /** `true` (default) = Israel single-day Yom Tov reckoning (`i=on`). `false` =
+   *  diaspora two-day Yom Tov reckoning (`i=off`), correct for a visitor
+   *  physically outside Israel. Only affects how many days a *Torah* Yom Tov
+   *  spans - the `maj=on&min=off&mod=off` filter is independent of `i`, so
+   *  Chanukah/Purim/Yom HaAtzma'ut/Chol HaMoed stay excluded either way. */
+  israelMode?: boolean;
+  /** IANA timezone the candle-lighting/havdalah times are computed against
+   *  (defaults to `'Asia/Jerusalem'`). Pass the visitor's own timezone when
+   *  computing their local windows so day boundaries line up with their sunset,
+   *  not Jerusalem's. */
+  tzid?: string;
+}
+
 /**
- * Fetches and merges Shabbat + major-holiday (Israel single-day Yom Tov mode)
- * windows for the next ~45 days from Hebcal's free public JSON API.
+ * Fetches and merges Shabbat + major-holiday windows for the next ~45 days from
+ * Hebcal's free public JSON API. Defaults to Israel single-day Yom Tov mode at
+ * Jerusalem's timezone; pass `options` to compute windows for a visitor's own
+ * location/reckoning instead (see {@link FetchWindowsOptions}).
  *
  * Uses a *single* call to the `/hebcal` endpoint (not the separate `/shabbat`
  * endpoint) with `ss=on` added, passing `latitude`/`longitude` directly
@@ -108,19 +124,27 @@ function toISODate(date: Date): string {
  * range, correctly localized, in one chronologically-ordered, already-merged
  * list - which also means there's nothing left to de-duplicate.
  */
-export async function fetchWindows(latitude: number, longitude: number): Promise<Window[]> {
+export async function fetchWindows(
+  latitude: number,
+  longitude: number,
+  options: FetchWindowsOptions = {},
+): Promise<Window[]> {
+  const israelMode = options.israelMode ?? true;
+  const tzid = options.tzid ?? 'Asia/Jerusalem';
+
   const start = new Date();
   const end = new Date(start.getTime() + 45 * 24 * 60 * 60 * 1000);
   const startParam = toISODate(start);
   const endParam = toISODate(end);
 
-  // i=on = Israel single-day Yom Tov reckoning (not diaspora 2-day).
+  // i=on = Israel single-day Yom Tov reckoning; i=off = diaspora 2-day.
   // c=on = attach candles/havdalah entries to holidays, not just bare dates.
   // ss=on = weekly Shabbat candle-lighting/havdalah, localized to lat/long.
   // maj=on + everything else off = only real work-restricted Yom Tov days.
+  const iParam = israelMode ? 'on' : 'off';
   const url =
     `https://www.hebcal.com/hebcal?cfg=json&v=1&maj=on&min=off&mod=off&nx=off&mf=off&ss=on` +
-    `&c=on&i=on&latitude=${latitude}&longitude=${longitude}&tzid=Asia/Jerusalem` +
+    `&c=on&i=${iParam}&latitude=${latitude}&longitude=${longitude}&tzid=${encodeURIComponent(tzid)}` +
     `&start=${startParam}&end=${endParam}`;
 
   const res = await fetch(url);
@@ -134,6 +158,40 @@ export async function fetchWindows(latitude: number, longitude: number): Promise
   const windows = pairWindows(data.items ?? [], { label: SHABBAT_LABEL, closingLabel: SHABBAT_CLOSING_LABEL });
 
   return windows.sort((a, b) => a.start - b.start);
+}
+
+/**
+ * Coalesces overlapping/touching windows into continuous ones. Needed when two
+ * independently-computed window lists are unioned (e.g. Israel's Shabbat and a
+ * foreign visitor's local Shabbat, which partially overlap): naively searching
+ * the concatenated list with {@link findActiveWindow} would return whichever
+ * matching window comes first and report *its* `end`, so a visitor sitting
+ * inside both windows could be told the site reopens at Israel's (earlier)
+ * havdalah while they're still blocked by their own later one. Merging first
+ * makes the reported reopen time the true end of the combined block.
+ *
+ * When two windows overlap, the merged window keeps the label of whichever one
+ * ends *later* - that's the occasion actually keeping the visitor blocked, and
+ * the one whose end time is shown.
+ */
+export function mergeWindows(windows: Window[]): Window[] {
+  const sorted = [...windows].sort((a, b) => a.start - b.start);
+  const merged: Window[] = [];
+
+  for (const w of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && w.start <= last.end) {
+      if (w.end > last.end) {
+        last.end = w.end;
+        last.label = w.label;
+        last.closingLabel = w.closingLabel;
+      }
+    } else {
+      merged.push({ ...w });
+    }
+  }
+
+  return merged;
 }
 
 /** Pure function: is `now` inside any of the given windows? */

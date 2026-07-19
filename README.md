@@ -99,14 +99,48 @@ export interface ShabbatGateConfig {
     reasonLabel: string;
     closingLabel: string;
     untilLabel: string;
+    /** Optional localized message shown below the Hebrew one (with a blank-line
+     *  gap), for a visitor outside Israel, in their own browser language. Absent
+     *  for visitors in Israel, Hebrew-speaking visitors, or unknown location. */
+    secondary?: { dir: 'ltr' | 'rtl'; lines: string[] };
   }) => string;
 
   /** Minutes to close the site *before* candle-lighting and reopen *after*
    *  havdalah, on top of the raw Hebcal window. Defaults to 0. Useful padding
    *  against clock drift / last-minute browsing right at the boundary. */
   bufferMinutes?: number;
+
+  /** When `true`, also block a visitor during Shabbat/Yom Tov in *their own*
+   *  location (from Cloudflare's `request.cf` geolocation), not only Israel's.
+   *  Closed to them if it's Shabbat in Israel *or* where they are - so an
+   *  overseas visitor stays blocked from Israel's candle-lighting through their
+   *  own local havdalah. Holidays for a visitor outside Israel use diaspora
+   *  two-day Yom Tov reckoning. Defaults to `false` (Israel-only). Falls back to
+   *  the Israel-only decision when a request has no geolocation (local dev,
+   *  unplaceable IP). */
+  enforceVisitorLocation?: boolean;
 }
 ```
+
+### Blocking by the visitor's timezone too (`enforceVisitorLocation`)
+
+By default the gate uses **Israel's** calendar for every visitor worldwide: the moment
+Shabbat ends in Israel, the site reopens for everyone - including a US visitor for whom it's
+still Shabbat. Set `enforceVisitorLocation: true` to make it the **union of two Shabbatot**:
+the site is closed to a visitor if it's Shabbat/Yom Tov in Israel **or** where they are. A New
+York visitor is then blocked from Israel's candle-lighting (even if it's still Friday afternoon
+for them) continuously through their own local havdalah. Holidays are reckoned diaspora-style
+(two-day Yom Tov) for visitors abroad. Chanukah, Purim, Yom HaAtzma'ut and Chol HaMoed never
+block, in Israel or abroad.
+
+### Localized message for visitors abroad
+
+When a visitor is outside Israel, the default holding page shows the Hebrew message first,
+then (below a two-line gap) a message in their browser language (from `Accept-Language`).
+Built-in languages: English (default/fallback), French, Russian, Spanish, German, and Arabic
+(rendered right-to-left). Hebrew speakers and visitors in Israel get no second message; the
+reopen time is shown in the visitor's own timezone. This works even without `enforceVisitorLocation` (whenever the site is
+closed and the visitor is known to be abroad).
 
 Full example:
 
@@ -134,9 +168,13 @@ export const onRequest: PagesFunction = (context) => gate(context);
    endpoint (`ss=on` for weekly Shabbat + `maj=on` for major holidays), passing `latitude`/
    `longitude` directly so every window is correctly localized, not just the nearest one.
 4. `bufferMinutes` (if set) is applied on top of the fetched windows before the time check.
-5. If the current time falls inside a window, serve the holding page (HTTP 200). Otherwise let
+5. If `enforceVisitorLocation` is set, a second window list is fetched for the visitor's own
+   location (from `request.cf`, diaspora reckoning when abroad) and unioned with Israel's -
+   blocking if the time falls inside either. Overlapping windows are coalesced into one
+   continuous window so the shown reopen time is accurate.
+6. If the current time falls inside a window, serve the holding page (HTTP 200). Otherwise let
    the real site through.
-6. Any error along the way falls through to the real site.
+7. Any error along the way falls through to the real site.
 
 ## Internal cache key
 

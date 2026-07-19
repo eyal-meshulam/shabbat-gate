@@ -3,6 +3,40 @@
 All notable changes to this package are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.0] - Unreleased
+
+### Added
+
+- `ShabbatGateConfig.enforceVisitorLocation` - when `true`, the gate blocks a visitor during
+  Shabbat/Yom Tov in *their own* location (from Cloudflare's `request.cf` geolocation), not
+  only Israel's. The site is closed to them if it's Shabbat in Israel **or** where they are,
+  so an overseas visitor stays blocked from Israel's candle-lighting right through their own
+  local havdalah. Holidays for a visitor outside Israel use diaspora two-day Yom Tov reckoning
+  (`i=off`); Chanukah/Purim/Yom HaAtzma'ut/Chol HaMoed stay open either way. Falls back to the
+  Israel-only decision when a request has no geolocation (local `wrangler dev`, unplaceable IP).
+  Defaults to `false` (original Israel-only behavior).
+- **Localized secondary holding-page message.** For a visitor physically outside Israel, the
+  default holding page now shows the Hebrew message, then (below a blank-line gap) a message in
+  the visitor's own browser language (from `Accept-Language`). Built-in languages: English
+  (default/fallback), French, Russian, Spanish, German, and Arabic (right-to-left).
+  Hebrew-speaking visitors and visitors
+  in Israel get no second message. Reopen time is shown in the visitor's own timezone. Works
+  independently of `enforceVisitorLocation` (whenever the site is closed and the visitor is
+  known to be abroad).
+- New exports supporting the above: `fetchWindows` now takes an optional third `options`
+  argument (`{ israelMode?, tzid? }`) for computing a non-Israel calendar; `mergeWindows`
+  (coalesces overlapping window lists into continuous ones); `SUPPORTED_LANGUAGES`,
+  `resolveVisitorLanguage`, and the `SecondaryMessage` / `SupportedLanguage` /
+  `FetchWindowsOptions` types.
+
+### Changed
+
+- `HoldingPageContext` gained an optional `secondary?: SecondaryMessage` field (the localized
+  block). Existing custom `renderHoldingPage` functions are unaffected - the field is optional
+  and simply ignored if unused.
+- The default holding page now HTML-escapes `siteName` and all label fields before
+  interpolation.
+
 ## [0.1.3] - 2026-07-12
 
 ### Fixed

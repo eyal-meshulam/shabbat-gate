@@ -1,10 +1,13 @@
 import { isBot } from './botPattern.js';
-import { fetchWindows, findActiveWindow, type Window } from './hebcal.js';
+import { fetchWindows, findActiveWindow, mergeWindows, SHABBAT_LABEL, type Window } from './hebcal.js';
 import { defaultRenderHoldingPage, type HoldingPageContext } from './holdingPage.js';
+import { buildSecondaryMessage, resolveVisitorLanguage } from './translations.js';
 
-export type { Window } from './hebcal.js';
-export type { HoldingPageContext } from './holdingPage.js';
-export { isBlocked, findActiveWindow, pairWindows, fetchWindows } from './hebcal.js';
+export type { Window, FetchWindowsOptions } from './hebcal.js';
+export type { HoldingPageContext, SecondaryMessage } from './holdingPage.js';
+export type { SupportedLanguage } from './translations.js';
+export { isBlocked, findActiveWindow, mergeWindows, pairWindows, fetchWindows } from './hebcal.js';
+export { SUPPORTED_LANGUAGES, resolveVisitorLanguage } from './translations.js';
 export { isBot, BOT_PATTERN } from './botPattern.js';
 export { defaultRenderHoldingPage } from './holdingPage.js';
 
@@ -28,6 +31,16 @@ export interface ShabbatGateConfig {
    *  boundary - applied at decision time, not baked into the cached windows,
    *  so changing it takes effect immediately without waiting on the cache. */
   bufferMinutes?: number;
+  /** When `true`, also block a visitor during Shabbat/Yom Tov in *their own*
+   *  location (derived from Cloudflare's `request.cf` geolocation), not only
+   *  during Israel's. The site is then closed to them if it's Shabbat in Israel
+   *  *or* where they are - so an overseas visitor stays blocked from Israel's
+   *  candle-lighting right through their own local havdalah. Holidays for a
+   *  visitor outside Israel use diaspora two-day Yom Tov reckoning. Defaults to
+   *  `false` (Israel-only gate, the original behavior). If geolocation is
+   *  unavailable for a request (e.g. local `wrangler dev`, or an IP Cloudflare
+   *  can't place), that request falls back to the Israel-only decision. */
+  enforceVisitorLocation?: boolean;
 }
 
 const JERUSALEM_LATITUDE = 31.7683;
@@ -39,18 +52,24 @@ const JERUSALEM_LONGITUDE = 35.2137;
  *  can pick a different key and avoid accidentally colliding with this one -
  *  which would silently serve stale, unprocessed windows for up to 24h. */
 export const INTERNAL_CACHE_KEY_URL = 'https://internal.cache/shabbat-gate-windows-v1';
+/** Cache-key prefix for per-visitor-location window lists. Keyed by rounded
+ *  coordinates + timezone + reckoning so all visitors within ~1° of each other
+ *  share one cached fetch (sunset differs by only a few minutes across a cell -
+ *  immaterial at "block the whole site or not" granularity). */
+const VISITOR_CACHE_KEY_PREFIX = 'https://internal.cache/shabbat-gate-visitor-v1';
 const CACHE_TTL_SECONDS = 24 * 60 * 60;
 
-async function getWindows(latitude: number, longitude: number): Promise<Window[]> {
+/** Fetch a window list through the Workers Cache API under a fixed key. */
+async function getCachedWindows(cacheKeyUrl: string, fetcher: () => Promise<Window[]>): Promise<Window[]> {
   const cache = caches.default;
-  const cacheRequest = new Request(INTERNAL_CACHE_KEY_URL);
+  const cacheRequest = new Request(cacheKeyUrl);
 
   const cached = await cache.match(cacheRequest);
   if (cached) {
     return (await cached.json()) as Window[];
   }
 
-  const windows = await fetchWindows(latitude, longitude);
+  const windows = await fetcher();
   const cacheResponse = new Response(JSON.stringify(windows), {
     headers: {
       'content-type': 'application/json',
@@ -61,9 +80,54 @@ async function getWindows(latitude: number, longitude: number): Promise<Window[]
   return windows;
 }
 
-function formatJerusalemTime(epochMs: number): string {
+interface VisitorLocation {
+  latitude: number;
+  longitude: number;
+  tzid: string;
+  israelMode: boolean;
+}
+
+/** Reads the visitor's geolocation from Cloudflare's `request.cf`. Returns
+ *  `null` when any needed field is missing/unparseable (local dev, an IP CF
+ *  can't place) so callers can fall back to the Israel-only decision. A visitor
+ *  physically in Israel gets Israel single-day reckoning; everyone else gets
+ *  diaspora two-day Yom Tov. */
+function readVisitorLocation(request: Request): VisitorLocation | null {
+  const cf = (request as unknown as { cf?: Record<string, unknown> }).cf;
+  if (!cf) {
+    return null;
+  }
+
+  const latitude = Number(cf.latitude);
+  const longitude = Number(cf.longitude);
+  const tzid = typeof cf.timezone === 'string' ? cf.timezone : '';
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || !tzid) {
+    return null;
+  }
+
+  return { latitude, longitude, tzid, israelMode: cf.country === 'IL' };
+}
+
+/** Israel/Jerusalem windows - the base gate, always computed. */
+function getIsraelWindows(latitude: number, longitude: number): Promise<Window[]> {
+  return getCachedWindows(INTERNAL_CACHE_KEY_URL, () => fetchWindows(latitude, longitude));
+}
+
+/** Windows for a specific visitor location, cached per rounded cell. */
+function getVisitorWindows(loc: VisitorLocation): Promise<Window[]> {
+  const rlat = Math.round(loc.latitude);
+  const rlon = Math.round(loc.longitude);
+  const iParam = loc.israelMode ? 'on' : 'off';
+  const cacheKey = `${VISITOR_CACHE_KEY_PREFIX}?lat=${rlat}&lon=${rlon}&tz=${encodeURIComponent(loc.tzid)}&i=${iParam}`;
+  return getCachedWindows(cacheKey, () =>
+    fetchWindows(loc.latitude, loc.longitude, { israelMode: loc.israelMode, tzid: loc.tzid }),
+  );
+}
+
+function formatTime(epochMs: number, tzid: string): string {
   return new Intl.DateTimeFormat('he-IL', {
-    timeZone: 'Asia/Jerusalem',
+    timeZone: tzid,
     day: '2-digit',
     month: '2-digit',
     hour: '2-digit',
@@ -105,11 +169,41 @@ async function evaluateGate(config: ShabbatGateConfig, request: Request): Promis
   try {
     const latitude = config.latitude ?? JERUSALEM_LATITUDE;
     const longitude = config.longitude ?? JERUSALEM_LONGITUDE;
-    const windows = applyBuffer(await getWindows(latitude, longitude), config.bufferMinutes ?? 0);
+    const bufferMinutes = config.bufferMinutes ?? 0;
+
+    // Read the visitor's location once - it drives both the optional extra
+    // enforcement (their local Shabbat windows) and the localized message /
+    // local-time display shown to a visitor outside Israel.
+    const visitor = readVisitorLocation(request);
+    const isAbroad = visitor !== null && !visitor.israelMode;
+
+    let windows = applyBuffer(await getIsraelWindows(latitude, longitude), bufferMinutes);
+
+    if (config.enforceVisitorLocation && visitor) {
+      const visitorWindows = applyBuffer(await getVisitorWindows(visitor), bufferMinutes);
+      // Union of both calendars: block if it's Shabbat/Yom Tov in Israel OR
+      // where the visitor is. Merge coalesces the overlap into one continuous
+      // block so the shown reopen time is the true end of both.
+      windows = mergeWindows([...windows, ...visitorWindows]);
+    }
+
     const active = findActiveWindow(windows, Date.now());
 
     if (!active) {
       return { type: 'pass' };
+    }
+
+    // For a visitor abroad, show times in their own timezone (that's who is
+    // looking at the page) and append a message in their browser language.
+    const displayTzid = isAbroad ? visitor!.tzid : 'Asia/Jerusalem';
+    const untilLabel = formatTime(active.end, displayTzid);
+
+    let secondary: HoldingPageContext['secondary'];
+    if (isAbroad) {
+      const language = resolveVisitorLanguage(request.headers.get('accept-language') ?? '');
+      if (language !== 'he') {
+        secondary = buildSecondaryMessage(language, active.label === SHABBAT_LABEL, untilLabel);
+      }
     }
 
     const render = config.renderHoldingPage ?? defaultRenderHoldingPage;
@@ -117,7 +211,8 @@ async function evaluateGate(config: ShabbatGateConfig, request: Request): Promis
       siteName: config.siteName,
       reasonLabel: active.label,
       closingLabel: active.closingLabel,
-      untilLabel: formatJerusalemTime(active.end),
+      untilLabel,
+      secondary,
     });
 
     return { type: 'block', html };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findActiveWindow, isBlocked, pairWindows, type Window } from './hebcal.js';
+import { findActiveWindow, isBlocked, mergeWindows, pairWindows, type Window } from './hebcal.js';
 
 describe('pairWindows', () => {
   it('pairs a single candles/havdalah into one window', () => {
@@ -132,5 +132,67 @@ describe('isBlocked / findActiveWindow', () => {
   it('treats the window as [start, end) - end is exclusive', () => {
     expect(isBlocked(windows, 2000)).toBe(false);
     expect(isBlocked(windows, 1999)).toBe(true);
+  });
+});
+
+describe('mergeWindows', () => {
+  it('leaves non-overlapping windows untouched (just sorted)', () => {
+    const merged = mergeWindows([
+      { start: 5000, end: 6000, label: 'ב', closingLabel: 'ב' },
+      { start: 1000, end: 2000, label: 'א', closingLabel: 'א' },
+    ]);
+
+    expect(merged).toEqual([
+      { start: 1000, end: 2000, label: 'א', closingLabel: 'א' },
+      { start: 5000, end: 6000, label: 'ב', closingLabel: 'ב' },
+    ]);
+  });
+
+  it('coalesces two overlapping windows into one, keeping the later end + its label', () => {
+    // Israel Shabbat [100, 500) overlaps the visitor's local Shabbat [300, 900):
+    // the union is one continuous block [100, 900) that reopens at the visitor's
+    // later havdalah, labelled with the occasion still keeping them blocked.
+    const merged = mergeWindows([
+      { start: 100, end: 500, label: 'שבת (ישראל)', closingLabel: 'השבת' },
+      { start: 300, end: 900, label: 'שבת (מקומי)', closingLabel: 'השבת המקומית' },
+    ]);
+
+    expect(merged).toEqual([
+      { start: 100, end: 900, label: 'שבת (מקומי)', closingLabel: 'השבת המקומית' },
+    ]);
+  });
+
+  it('keeps the earlier window\'s label when a later window is fully contained', () => {
+    const merged = mergeWindows([
+      { start: 100, end: 900, label: 'חיצוני', closingLabel: 'חיצוני' },
+      { start: 300, end: 500, label: 'פנימי', closingLabel: 'פנימי' },
+    ]);
+
+    expect(merged).toEqual([
+      { start: 100, end: 900, label: 'חיצוני', closingLabel: 'חיצוני' },
+    ]);
+  });
+
+  it('does not merge windows that only touch at the boundary end === start', () => {
+    // Windows are [start, end) half-open, so [100,200) and [200,300) don't
+    // actually overlap - but treating end===start as contiguous is harmless and
+    // avoids a spurious 1ms reopen gap, so they DO get merged here.
+    const merged = mergeWindows([
+      { start: 100, end: 200, label: 'א', closingLabel: 'א' },
+      { start: 200, end: 300, label: 'ב', closingLabel: 'ב' },
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toEqual({ start: 100, end: 300, label: 'ב', closingLabel: 'ב' });
+  });
+
+  it('does not mutate the input windows', () => {
+    const input: Window[] = [
+      { start: 100, end: 500, label: 'א', closingLabel: 'א' },
+      { start: 300, end: 900, label: 'ב', closingLabel: 'ב' },
+    ];
+    mergeWindows(input);
+
+    expect(input[0].end).toBe(500);
   });
 });

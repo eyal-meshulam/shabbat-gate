@@ -157,6 +157,160 @@ describe('bufferMinutes', () => {
   });
 });
 
+// Routes the fetch mock by which calendar is being requested: the visitor's
+// windows are fetched with their own timezone in the URL, Israel's with
+// Asia/Jerusalem. Lets a single mock return different windows per calendar.
+function routedFetch(byCalendar: { israel: unknown[]; visitor: unknown[] }) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = String(input);
+    const items = url.includes('America') ? byCalendar.visitor : byCalendar.israel;
+    return new Response(JSON.stringify({ items }), { status: 200 });
+  });
+}
+
+function requestWithCf(
+  url: string,
+  cf: Record<string, unknown> | undefined,
+  headers?: Record<string, string>,
+): Request {
+  const request = new Request(url, headers ? { headers } : undefined);
+  if (cf) {
+    Object.defineProperty(request, 'cf', { value: cf, configurable: true });
+  }
+  return request;
+}
+
+const NY_CF = { latitude: '40.7128', longitude: '-74.0060', timezone: 'America/New_York', country: 'US' };
+const IL_CF = { latitude: '32.0853', longitude: '34.7818', timezone: 'Asia/Jerusalem', country: 'IL' };
+
+describe('enforceVisitorLocation', () => {
+  beforeEach(() => {
+    // @ts-expect-error - test-only global stub for the Workers Cache API
+    globalThis.caches = { default: fakeCache() };
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("blocks when it's Shabbat where the visitor is, even though it isn't in Israel", async () => {
+    routedFetch({ israel: [], visitor: OPEN_WINDOW_ITEMS });
+
+    const gate = createShabbatGate({ siteName: 'Test Site', enforceVisitorLocation: true });
+    const { context, next } = makeContext(requestWithCf('https://example.com/', NY_CF));
+
+    const response = await gate(context);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(await response.text()).toContain('Test Site');
+  });
+
+  it("does not consult the visitor's calendar when the flag is off (Israel-only)", async () => {
+    routedFetch({ israel: [], visitor: OPEN_WINDOW_ITEMS });
+
+    const gate = createShabbatGate({ siteName: 'Test Site' });
+    const { context, next } = makeContext(requestWithCf('https://example.com/', NY_CF));
+
+    await gate(context);
+
+    // Israel is outside any window, and the flag is off, so the visitor's open
+    // window must be ignored - the request goes through.
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('falls back to the Israel-only decision when geolocation is unavailable', async () => {
+    routedFetch({ israel: [], visitor: OPEN_WINDOW_ITEMS });
+
+    const gate = createShabbatGate({ siteName: 'Test Site', enforceVisitorLocation: true });
+    // No `cf` on the request (e.g. local dev): the visitor window is never
+    // fetched, so only Israel's (empty) calendar decides -> let through.
+    const { context, next } = makeContext(requestWithCf('https://example.com/', undefined));
+
+    await gate(context);
+
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it("still blocks on Israel's Shabbat even when the visitor's location is clear", async () => {
+    routedFetch({ israel: OPEN_WINDOW_ITEMS, visitor: [] });
+
+    const gate = createShabbatGate({ siteName: 'Test Site', enforceVisitorLocation: true });
+    const { context, next } = makeContext(requestWithCf('https://example.com/', NY_CF));
+
+    const response = await gate(context);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(await response.text()).toContain('Test Site');
+  });
+});
+
+describe('localized secondary message for visitors abroad', () => {
+  beforeEach(() => {
+    // @ts-expect-error - test-only global stub for the Workers Cache API
+    globalThis.caches = { default: fakeCache() };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () => new Response(JSON.stringify({ items: OPEN_WINDOW_ITEMS }), { status: 200 }),
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("appends a message in the visitor's browser language when they are abroad", async () => {
+    const gate = createShabbatGate({ siteName: 'Test Site' });
+    const { context } = makeContext(requestWithCf('https://example.com/', NY_CF, { 'accept-language': 'fr-FR,fr;q=0.9' }));
+
+    const response = await gate(context);
+    const body = await response.text();
+
+    expect(body).toContain('Chabbat'); // the French secondary line
+    expect(body).toContain('האתר סגור'); // Hebrew still present, first
+  });
+
+  it('does not append a secondary message for a Hebrew-speaking visitor', async () => {
+    const gate = createShabbatGate({ siteName: 'Test Site' });
+    const { context } = makeContext(requestWithCf('https://example.com/', NY_CF, { 'accept-language': 'he-IL,he;q=0.9' }));
+
+    const response = await gate(context);
+    const body = await response.text();
+
+    expect(body).not.toContain('class="secondary"');
+    expect(body).toContain('האתר סגור');
+  });
+
+  it('does not append a secondary message for a visitor inside Israel', async () => {
+    const gate = createShabbatGate({ siteName: 'Test Site' });
+    const { context } = makeContext(requestWithCf('https://example.com/', IL_CF, { 'accept-language': 'en-US,en;q=0.9' }));
+
+    const response = await gate(context);
+    const body = await response.text();
+
+    expect(body).not.toContain('class="secondary"');
+  });
+
+  it('renders the Arabic secondary block right-to-left', async () => {
+    const gate = createShabbatGate({ siteName: 'Test Site' });
+    const { context } = makeContext(requestWithCf('https://example.com/', NY_CF, { 'accept-language': 'ar,en;q=0.8' }));
+
+    const response = await gate(context);
+    const body = await response.text();
+
+    expect(body).toContain('<div class="secondary" dir="rtl">');
+    expect(body).toContain('شابات'); // "Shabat" in the Arabic line
+  });
+
+  it('falls back to English for an unsupported browser language', async () => {
+    const gate = createShabbatGate({ siteName: 'Test Site' });
+    const { context } = makeContext(requestWithCf('https://example.com/', NY_CF, { 'accept-language': 'ja-JP,ja;q=0.9' }));
+
+    const response = await gate(context);
+    const body = await response.text();
+
+    expect(body).toContain('observance of Shabbat'); // English fallback
+  });
+});
+
 describe('createShabbatGateForWorker', () => {
   beforeEach(() => {
     // @ts-expect-error - test-only global stub for the Workers Cache API
