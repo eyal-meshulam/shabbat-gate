@@ -79,12 +79,16 @@ import { createShabbatGateForWorker } from 'shabbat-gate';
 const gate = createShabbatGateForWorker({ siteName: 'שם האתר שלי' });
 
 export default {
-  async fetch(request: Request, env: { ASSETS: Fetcher }) {
-    const blocked = await gate(request);
+  async fetch(request: Request, env: { ASSETS: Fetcher }, ctx: ExecutionContext) {
+    const blocked = await gate(request, ctx);
     return blocked ?? env.ASSETS.fetch(request);
   },
 };
 ```
+
+העברת `ctx` היא אופציונלית אבל מומלצת: זה מה שמאפשר לרשימת חלונות שפג תוקפה להתרענן **אחרי**
+ששלחנו את התשובה (ראו [עמידות](#עמידות-timeout-ו-stale-while-revalidate)) במקום שהרענון יבוטל
+כשההרצה מסתיימת. `createShabbatGate` (ב-Pages) מקבל את זה אוטומטית מה-`context` שלו.
 
 **מוקש שמבטל את כל השער בשקט:** Cloudflare Worker עם `assets` binding מגיש כל בקשה שתואמת
 קובץ בתיקיית ה-assets **ישירות**, בלי להריץ בכלל את ה-`fetch` handler של ה-Worker - אלא אם
@@ -156,6 +160,11 @@ export interface ShabbatGateConfig {
    *  מיקום לבקשה (למשל `wrangler dev` מקומי, או IP ש-Cloudflare לא ממקם) - אותה בקשה
    *  נופלת חזרה להחלטה לפי ישראל בלבד. */
   enforceVisitorLocation?: boolean;
+
+  /** כמה זמן לחכות ל-Hebcal לפני שמוותרים ונופלים פתוח (ברירת מחדל: 3000 מילישניות).
+   *  משולם רק כשהקאש קר - ברגע שהוא חם, רשימת חלונות שפג תוקפה מוגשת מיד ומתרעננת
+   *  ברקע, כך שה-timeout הזה אף פעם לא נוחת על בקשה של גולש. */
+  hebcalTimeoutMs?: number;
 }
 ```
 
@@ -210,13 +219,31 @@ export const onRequest: PagesFunction = (context) => gate(context);
 6. אם הזמן הנוכחי נופל בתוך חלון, מוצג דף ה"סגור" (HTTP 200). אחרת, האתר האמיתי עובר.
 7. כל שגיאה בדרך גורמת למעבר לאתר האמיתי.
 
+## עמידות: timeout ו-stale-while-revalidate
+
+השער תלוי ב-API של צד שלישי (Hebcal) על הנתיב הקריטי של כל טעינת עמוד, ולכן הוא בנוי כך
+ש-Hebcal שלא זמין - או, מסוכן יותר, **איטי** - לא יוכל להפיל את האתר יחד איתו.
+
+- **הקריאה ל-Hebcal מבוטלת אחרי `hebcalTimeoutMs`** (ברירת מחדל 3 שניות). upstream איטי גרוע
+  יותר מכזה שנופל: `fetch` בלי abort לא נסגר לעולם, ההרצה של ה-Worker עוברת את מגבלת הזמן,
+  וקלאודפלייר מחזירה **504** לגולש - ה-`try/catch` שאמור "ליפול פתוח" אף פעם לא רץ, כי
+  `try/catch` מציל מ-rejection, לא מתקיעה. ה-abort הופך את התקיעה ל-rejection שהשער יודע
+  ליפול עליו פתוח. (זה לא תרחיש תיאורטי - ראו את רשומת 0.4.0 ביומן השינויים.)
+- **stale-while-revalidate.** גולש מחכה ל-Hebcal רק כשאין בכלל מידע שמיש בקאש. החלונות נשלפים
+  45 יום קדימה, ולכן ברגע שהקאש חם, רשימה שפג תוקפה מוגשת **מיד** ומתרעננת ברקע דרך
+  `waitUntil` - upstream איטי אף פעם לא יושב על בקשה של גולש. חלונות ישנים מוגשים עד 7 ימים.
+- **כישלון נשמר בקאש ל-60 שניות.** אחרת כל גולש מקביל פותח בקשה משלו מול upstream שכבר מתקשה,
+  וזה מה שהופך תשובה איטית אחת לאשכול של 504.
+- **קריאות מקבילות ממוזגות** לפי מפתח קאש בתוך אותו isolate, כך שהתנעה קרה פותחת חיבור אחד
+  ולא אחד לכל בקשה שנמצאת באוויר.
+
 ## מפתח קאש פנימי
 
 רשימת החלונות המאוחדת נשמרת בקאש תחת מפתח פנימי קבוע
-(`https://internal.cache/shabbat-gate-windows-v1`, מיוצא בשם `INTERNAL_CACHE_KEY_URL`) לכ-24
-שעות דרך Workers Cache API. אם הקוד שלכם עושה caching משלו לנתונים נגזרים (למשל חלונות עם
-buffer משלכם), כדאי להשתמש במפתח אחר - שימוש חוזר במפתח הזה יגרום בשקט להחזרת נתונים ישנים
-ולא-מעובדים למשך עד 24 שעות.
+(`https://internal.cache/shabbat-gate-windows-v2`, מיוצא בשם `INTERNAL_CACHE_KEY_URL`) דרך
+Workers Cache API - טרייה לכ-24 שעות, ואחר כך מוגשת ישנה תוך כדי רענון. אם הקוד שלכם עושה
+caching משלו לנתונים נגזרים (למשל חלונות עם buffer משלכם), כדאי להשתמש במפתח אחר - שימוש חוזר
+במפתח הזה יגרום בשקט להחזרת נתונים ישנים ולא-מעובדים.
 
 ## היסטוריית שינויים
 

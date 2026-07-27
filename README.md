@@ -79,12 +79,17 @@ import { createShabbatGateForWorker } from 'shabbat-gate';
 const gate = createShabbatGateForWorker({ siteName: 'My Site' });
 
 export default {
-  async fetch(request: Request, env: { ASSETS: Fetcher }) {
-    const blocked = await gate(request);
+  async fetch(request: Request, env: { ASSETS: Fetcher }, ctx: ExecutionContext) {
+    const blocked = await gate(request, ctx);
     return blocked ?? env.ASSETS.fetch(request);
   },
 };
 ```
+
+Passing `ctx` is optional but recommended: it's what lets a stale window list refresh *after*
+the response is sent (see [Resilience](#resilience-timeouts-and-stale-while-revalidate)) instead
+of the refresh being cancelled when the invocation ends. `createShabbatGate` (Pages) gets this
+automatically from its own `context`.
 
 **Gotcha that silently defeats the whole gate:** a Cloudflare Worker with an `assets` binding
 serves any request matching a file in the assets directory *directly*, without invoking the
@@ -156,6 +161,12 @@ export interface ShabbatGateConfig {
    *  the Israel-only decision when a request has no geolocation (local dev,
    *  unplaceable IP). */
   enforceVisitorLocation?: boolean;
+
+  /** How long to wait for Hebcal before giving up and failing open (default
+   *  3000ms). Only ever paid on a cold cache - once warm, an expired window list
+   *  is served immediately and refreshed in the background, so this timeout never
+   *  lands on a visitor's request. */
+  hebcalTimeoutMs?: number;
 }
 ```
 
@@ -213,13 +224,35 @@ export const onRequest: PagesFunction = (context) => gate(context);
    the real site through.
 7. Any error along the way falls through to the real site.
 
+## Resilience: timeouts and stale-while-revalidate
+
+The gate depends on a third-party API (Hebcal) on the critical path of every page load, so it
+is built so that Hebcal being unavailable - or, more dangerously, being *slow* - cannot take
+the site down with it.
+
+- **The Hebcal request is aborted after `hebcalTimeoutMs` (default 3s).** A slow upstream is
+  worse than a failing one: a `fetch` with no abort never settles, the Worker invocation runs
+  past its limit, and Cloudflare returns **504** to the visitor - the fail-open `try/catch`
+  never runs, because a `try/catch` rescues a rejection, never a hang. Aborting turns the hang
+  into a rejection the gate can fail open on. (This is not hypothetical; see the 0.4.0 entry in
+  the changelog.)
+- **Stale-while-revalidate.** A visitor only ever waits on Hebcal when there is nothing usable
+  cached at all. Windows are fetched 45 days ahead, so once the cache is warm an expired list
+  is served *immediately* and refreshed in the background via `waitUntil` - a slow upstream
+  never sits on a visitor's request. Stale windows are served for up to 7 days.
+- **Failures are cached for 60s.** Otherwise every concurrent visitor starts their own request
+  against an upstream that is already struggling, which is what turns one slow response into a
+  cluster of 504s.
+- **Concurrent fetches are deduped** per cache key within an isolate, so a cold start opens one
+  connection rather than one per in-flight request.
+
 ## Internal cache key
 
 The merged window list is cached under a fixed internal key
-(`https://internal.cache/shabbat-gate-windows-v1`, exported as `INTERNAL_CACHE_KEY_URL`) for
-~24h via the Workers Cache API. If your own code also caches derived data (e.g. windows with
-your own buffer applied) via `caches.default`, use a different key - reusing this one will
-silently serve stale, unprocessed data for up to 24h.
+(`https://internal.cache/shabbat-gate-windows-v2`, exported as `INTERNAL_CACHE_KEY_URL`) via
+the Workers Cache API - fresh for ~24h, then served stale while it refreshes. If your own code
+also caches derived data (e.g. windows with your own buffer applied) via `caches.default`, use
+a different key - reusing this one will silently serve stale, unprocessed data.
 
 ## Changelog
 

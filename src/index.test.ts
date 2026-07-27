@@ -13,7 +13,19 @@ function fakeCache() {
 
 function makeContext(request: Request) {
   const next = vi.fn(async () => new Response('real site'));
-  return { context: { request, next } as unknown as Parameters<ReturnType<typeof createShabbatGate>>[0], next };
+  // Real Pages Functions always hand the middleware a `waitUntil`; collecting
+  // what gets scheduled on it lets a test drain background work (e.g. a
+  // stale-while-revalidate refresh) before it finishes.
+  const pending: Promise<unknown>[] = [];
+  const waitUntil = vi.fn((promise: Promise<unknown>) => {
+    pending.push(promise);
+  });
+  return {
+    context: { request, next, waitUntil } as unknown as Parameters<ReturnType<typeof createShabbatGate>>[0],
+    next,
+    waitUntil,
+    drain: () => Promise.all(pending),
+  };
 }
 
 // A single merged `items` array, as returned by the one `/hebcal` call
@@ -392,5 +404,131 @@ describe('createShabbatGateForWorker', () => {
     const result = await gate(new Request('https://example.com/'));
 
     expect(result).toBeNull();
+  });
+});
+
+// Simulates a *slow* upstream rather than a failing one - the production
+// failure mode that caused 504s: a plain `await fetch()` with no abort never
+// settles, so the gate's fail-open try/catch never gets a chance to run (a
+// try/catch rescues a rejection, never a hang). The stub rejects on abort,
+// exactly as a real `fetch` does, so a working timeout turns the hang into a
+// rejection the gate can fail open on.
+function hangingFetch() {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation((_input, init) => {
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = (init as RequestInit | undefined)?.signal;
+      signal?.addEventListener('abort', () => {
+        reject(new Error('The operation was aborted'));
+      });
+    });
+  });
+}
+
+describe('slow upstream (the 504 bug)', () => {
+  beforeEach(() => {
+    // @ts-expect-error - test-only global stub for the Workers Cache API
+    globalThis.caches = { default: fakeCache() };
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('fails open instead of hanging when Hebcal never responds', async () => {
+    hangingFetch();
+
+    const gate = createShabbatGate({ siteName: 'Test Site', hebcalTimeoutMs: 50 });
+    const { context, next } = makeContext(new Request('https://example.com/'));
+
+    const response = await gate(context);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(await response.text()).toBe('real site');
+  });
+
+  it('does not start a fetch per visitor while the upstream is unhealthy', async () => {
+    const fetchSpy = hangingFetch();
+    const gate = createShabbatGate({ siteName: 'Test Site', hebcalTimeoutMs: 50 });
+
+    // Three visitors in a row, each after the previous one already timed out.
+    for (let i = 0; i < 3; i += 1) {
+      const { context, next } = makeContext(new Request('https://example.com/'));
+      await gate(context);
+      // Every one of them still gets the real site - failing open is the point.
+      expect(next).toHaveBeenCalledOnce();
+    }
+
+    // The failure is remembered, so only the first visitor pays for a fetch.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('serves stale cached windows immediately when the refresh is slow', async () => {
+    // Both times sit inside OPEN_WINDOW_ITEMS, so the *only* thing that can
+    // change the verdict between them is whether the cached windows survive.
+    const warmedAt = Date.parse('2020-06-01T00:00:00.000Z');
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(warmedAt);
+
+    // Warm the cache with a real (blocking) window...
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify({ items: OPEN_WINDOW_ITEMS }), { status: 200 });
+    });
+    const gate = createShabbatGate({ siteName: 'Test Site', hebcalTimeoutMs: 50 });
+    await gate(makeContext(new Request('https://example.com/')).context);
+
+    // ...then jump 25h ahead so it's stale, with an upstream that now hangs.
+    // The refresh must happen in the background, never on this visitor's
+    // request: they get the stale (still correct) verdict immediately.
+    nowSpy.mockReturnValue(warmedAt + 25 * 60 * 60 * 1000);
+    fetchSpy.mockImplementation((_input, init) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = (init as RequestInit | undefined)?.signal;
+        signal?.addEventListener('abort', () => reject(new Error('The operation was aborted')));
+      });
+    });
+
+    const { context, next, waitUntil, drain } = makeContext(new Request('https://example.com/'));
+    const response = await gate(context);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(await response.text()).toContain('Test Site');
+    // The refresh was moved off the request, not skipped.
+    expect(waitUntil).toHaveBeenCalledOnce();
+    await drain();
+  });
+
+  it('still serves stale windows when the host gives the gate no waitUntil', async () => {
+    const warmedAt = Date.parse('2020-06-01T00:00:00.000Z');
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(warmedAt);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify({ items: OPEN_WINDOW_ITEMS }), { status: 200 });
+    });
+    const gate = createShabbatGate({ siteName: 'Test Site', hebcalTimeoutMs: 50 });
+    await gate(makeContext(new Request('https://example.com/')).context);
+
+    nowSpy.mockReturnValue(warmedAt + 25 * 60 * 60 * 1000);
+    const next = vi.fn(async () => new Response('real site'));
+    // A host (a dev harness, a hand-rolled adapter) with no waitUntil at all:
+    // scheduling the refresh fails, which must not cost the visitor the good
+    // windows already in hand.
+    const response = await gate({ request: new Request('https://example.com/'), next } as never);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(await response.text()).toContain('Test Site');
+    fetchSpy.mockRestore();
+  });
+
+  it('dedupes concurrent cold-start fetches into one upstream request', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return new Response(JSON.stringify({ items: OPEN_WINDOW_ITEMS }), { status: 200 });
+    });
+    const gate = createShabbatGate({ siteName: 'Test Site' });
+
+    await Promise.all(
+      Array.from({ length: 5 }, () => gate(makeContext(new Request('https://example.com/')).context)),
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 });
