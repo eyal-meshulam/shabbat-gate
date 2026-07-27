@@ -3,7 +3,60 @@
 All notable changes to this package are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.3.1] - Unreleased
+## [0.4.0] - Unreleased
+
+### Fixed
+
+- **A *slow* Hebcal took a consumer's site down with 504s - the exact opposite of this
+  package's fail-open design.** Found in production on 2026-07-28 on `primestack.co.il`: 24h of
+  Cloudflare zone analytics showed 14 homepage `504`s, clustered in the same hours as 53 `504`s
+  on the internal cache key `/shabbat-gate-windows-v1`. Nothing else on the site 504'd.
+
+  Root cause: `fetchWindows` did a plain `await fetch(url)` with no timeout and no
+  `AbortSignal`. The gate wraps everything in a `try/catch` that fails open - **but a
+  `try/catch` only rescues a rejection, never a hang.** When Hebcal was slow rather than down,
+  the fetch never settled, the Worker invocation ran past its limit, and Cloudflare returned
+  504 to the visitor; the catch never ran, so "fail open" never happened. And because it was a
+  cache miss, *every* concurrent visitor started their own fetch - a thundering herd, which is
+  why the 504s arrived in clusters rather than one at a time.
+
+  Four changes, so that a slow or broken upstream can never again reach the visitor:
+  - **`fetchWindows` now aborts** via `AbortController` after `timeoutMs` (new
+    `FetchWindowsOptions` field, default 3000; exported as `DEFAULT_HEBCAL_TIMEOUT_MS`),
+    rejecting with a distinct `HebcalTimeoutError` so the failure mode is greppable in logs. A
+    real abort rather than a `Promise.race`, which would leave the underlying request dangling.
+    The signal stays armed across `res.json()` too - a stalled body stream hangs an invocation
+    just as effectively as a stalled connection.
+  - **Stale-while-revalidate.** A cached window list is now served past its 24h freshness
+    window (up to 7 days) while it refreshes in the background via `waitUntil`, so once the
+    cache is warm no visitor ever waits on Hebcal at all. Windows are fetched 45 days ahead, so
+    a week-old list is still correct for the next ~38 days.
+  - **Failures are cached for 60s**, so a struggling upstream gets one retry per minute instead
+    of one per visitor.
+  - **Concurrent fetches are deduped** per cache key within an isolate, closing the cold-start
+    herd the Cache API alone can't (it only helps once a fetch has *finished*).
+
+  Regression tests stub `fetch` with a promise that never resolves and assert the gate returns
+  the real site rather than hanging - both tests hang and fail against the old code.
+
+### Added
+
+- `ShabbatGateConfig.hebcalTimeoutMs` (default 3000) - how long to wait for Hebcal before
+  giving up and failing open. Only ever paid on a cold cache.
+- `createShabbatGateForWorker`'s handler now takes an optional second argument, the Worker's
+  `ctx`: `gate(request, ctx)`. Passing it lets a stale window list refresh *after* the response
+  is sent instead of the refresh being cancelled when the invocation ends. Backward compatible -
+  existing `gate(request)` calls keep working, they just lose background revalidation.
+  `createShabbatGate` (Pages) wires this up automatically from its own `context`.
+
+### Changed
+
+- **The internal cache key moved to `...-windows-v2`** (and `...-visitor-v2`), because cache
+  entries now carry their fetch timestamp and failure state rather than being a bare window
+  array. Consumers reading `INTERNAL_CACHE_KEY_URL` are unaffected; anyone who hardcoded the
+  `v1` string will now be reading a key nothing writes to.
+
+## [0.3.1] - Unreleased (never published separately; folded into 0.4.0)
 
 ### Documentation
 

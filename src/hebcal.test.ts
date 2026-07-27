@@ -1,5 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import { findActiveWindow, isBlocked, mergeWindows, pairWindows, type Window } from './hebcal.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  fetchWindows,
+  findActiveWindow,
+  HebcalTimeoutError,
+  isBlocked,
+  mergeWindows,
+  pairWindows,
+  type Window,
+} from './hebcal.js';
 
 describe('pairWindows', () => {
   it('pairs a single candles/havdalah into one window', () => {
@@ -194,5 +202,43 @@ describe('mergeWindows', () => {
     mergeWindows(input);
 
     expect(input[0].end).toBe(500);
+  });
+});
+
+describe('fetchWindows timeout', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('aborts and rejects with a distinct error when Hebcal never responds', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((_input, init) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = (init as RequestInit | undefined)?.signal;
+        signal?.addEventListener('abort', () => reject(new Error('The operation was aborted')));
+      });
+    });
+
+    await expect(fetchWindows(31.7683, 35.2137, { timeoutMs: 30 })).rejects.toBeInstanceOf(
+      HebcalTimeoutError,
+    );
+    // The abort has to reach fetch itself - a Promise.race would leave the
+    // underlying request dangling instead.
+    expect((fetchSpy.mock.calls[0][1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('does not abort a response that arrives in time', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify({ items: [] }), { status: 200 });
+    });
+
+    await expect(fetchWindows(31.7683, 35.2137, { timeoutMs: 1000 })).resolves.toEqual([]);
+  });
+
+  it('passes through a non-timeout failure unchanged', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response('nope', { status: 503 });
+    });
+
+    await expect(fetchWindows(31.7683, 35.2137)).rejects.toThrow('hebcal fetch failed: 503');
   });
 });

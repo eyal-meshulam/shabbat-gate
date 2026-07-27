@@ -113,6 +113,30 @@ export interface FetchWindowsOptions {
    *  `latitude`/`longitude` are ignored when it is present. Jerusalem=281184,
    *  Haifa=294801, Tel Aviv=293397, Beer Sheva=295530. */
   geonameid?: number;
+  /** How long to wait for Hebcal before aborting the request (default 3000ms).
+   *
+   *  A *slow* upstream is more dangerous here than a failing one: without an
+   *  abort the fetch never settles, the Worker invocation runs past its limit,
+   *  and Cloudflare returns 504 to the visitor - the gate's fail-open catch
+   *  never runs, because a try/catch rescues a rejection, never a hang. This
+   *  is not hypothetical: it took a site's homepage down in production on
+   *  2026-07-28. Aborting converts the hang into a rejection the caller can
+   *  fail open on. */
+  timeoutMs?: number;
+}
+
+/** Conservative default: Hebcal normally answers in well under a second, and
+ *  the answer only has to be waited for on a cold cache anyway. */
+export const DEFAULT_HEBCAL_TIMEOUT_MS = 3000;
+
+/** Thrown when the Hebcal request is aborted by {@link FetchWindowsOptions.timeoutMs}.
+ *  A distinct class (and a `shabbat-gate: hebcal timeout` message) so the next
+ *  occurrence is greppable in Workers logs, separately from other failures. */
+export class HebcalTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`shabbat-gate: hebcal timeout after ${timeoutMs}ms`);
+    this.name = 'HebcalTimeoutError';
+  }
 }
 
 /**
@@ -163,17 +187,35 @@ export async function fetchWindows(
     `&c=on&i=${iParam}&${locationParam}&tzid=${encodeURIComponent(tzid)}` +
     `&start=${startParam}&end=${endParam}`;
 
-  const res = await fetch(url);
+  // The abort has to stay armed across `res.json()` too, not just the initial
+  // response - a stalled body stream hangs the invocation just as effectively
+  // as a stalled connection.
+  const timeoutMs = options.timeoutMs ?? DEFAULT_HEBCAL_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!res.ok) {
-    throw new Error(`hebcal fetch failed: ${res.status}`);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+
+    if (!res.ok) {
+      throw new Error(`hebcal fetch failed: ${res.status}`);
+    }
+
+    const data = (await res.json()) as HebcalResponse;
+
+    const windows = pairWindows(data.items ?? [], { label: SHABBAT_LABEL, closingLabel: SHABBAT_CLOSING_LABEL });
+
+    return windows.sort((a, b) => a.start - b.start);
+  } catch (error) {
+    // Any rejection after the abort fired is the abort, whatever shape the
+    // runtime's error takes (DOMException in Workers, TypeError elsewhere).
+    if (controller.signal.aborted) {
+      throw new HebcalTimeoutError(timeoutMs);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-
-  const data = (await res.json()) as HebcalResponse;
-
-  const windows = pairWindows(data.items ?? [], { label: SHABBAT_LABEL, closingLabel: SHABBAT_CLOSING_LABEL });
-
-  return windows.sort((a, b) => a.start - b.start);
 }
 
 /**
