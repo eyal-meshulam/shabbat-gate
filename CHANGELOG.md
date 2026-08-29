@@ -3,7 +3,37 @@
 All notable changes to this package are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.4.0] - Unreleased
+## [0.4.1] - Unreleased
+
+### Fixed
+
+- **`adsbot-google` in the crawler allowlist was cloaking under Google Ads policy - caused a
+  real Ads + Merchant Center account suspension.** Found 2026-08-29 on a consumer site: during
+  a gate closure window, AdsBot-Google (the crawler Google Ads uses to verify what a real ad
+  landing page shows) saw the full real site, while a human clicking the same ad saw the holding
+  page. Google's suspension notice for "עקיפת מערכות: הסוואה" (circumventing systems: cloaking)
+  described exactly this - showing Google's verification bot different content than what users
+  see - almost verbatim.
+
+  Removing the explicit `adsbot-google` term from `BOT_PATTERN`'s alternation alone would **not**
+  have fixed this: the pattern's generic `bot` alternative already matches the substring "Bot" in
+  "AdsBot-Google", so it stayed allowed regardless. `isBot()` now checks a dedicated
+  `AD_VERIFICATION_BOT_PATTERN` first and returns `false` before the broad pattern ever runs, so
+  these crawlers are gated exactly like a human visitor. Every other crawler in `BOT_PATTERN`
+  (Googlebot, Bingbot, GPTBot, ClaudeBot, etc.) is unaffected - organic/AI indexing during a
+  closure window is a different, broadly-tolerated risk category from a dedicated ad-verification
+  bot, which ad-network policy specifically requires to see what humans see.
+
+  Two more crawlers in the same risk category are excluded alongside AdsBot-Google, for the same
+  reason and hitting the same "bot" substring problem: **`Storebot-Google`** (Google
+  Merchant Center/Shopping's product landing-page verifier - directly relevant here, since
+  Merchant Center was the linked account also suspended) and **`adidxbot`** (Microsoft
+  Advertising/Bing Ads' equivalent landing-page verification crawler).
+
+  Regression tests assert `isBot()` returns `false` for AdsBot-Google, AdsBot-Google-Mobile,
+  Storebot-Google, and adidxbot user agents.
+
+## [0.4.0] - 2026-07-28
 
 ### Fixed
 
