@@ -92,6 +92,11 @@ function toISODate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+/** How far back the Hebcal range starts. The longest closure is a two-day Rosh
+ *  Hashana running into Shabbat, whose first candles are lit three days before
+ *  it ends; four days covers it with a margin for the UTC date boundary. */
+export const HEBCAL_LOOKBACK_DAYS = 4;
+
 export interface FetchWindowsOptions {
   /** `true` (default) = Israel single-day Yom Tov reckoning (`i=on`). `false` =
    *  diaspora two-day Yom Tov reckoning (`i=off`), correct for a visitor
@@ -140,7 +145,8 @@ export class HebcalTimeoutError extends Error {
 }
 
 /**
- * Fetches and merges Shabbat + major-holiday windows for the next ~45 days from
+ * Fetches and merges Shabbat + major-holiday windows from a few days back (so a
+ * closure already in progress is included) to ~45 days ahead, from
  * Hebcal's free public JSON API. Defaults to Israel single-day Yom Tov mode at
  * Jerusalem's timezone; pass `options` to compute windows for a visitor's own
  * location/reckoning instead (see {@link FetchWindowsOptions}).
@@ -165,8 +171,12 @@ export async function fetchWindows(
   const israelMode = options.israelMode ?? true;
   const tzid = options.tzid ?? 'Asia/Jerusalem';
 
-  const start = new Date();
-  const end = new Date(start.getTime() + 45 * 24 * 60 * 60 * 1000);
+  // Start a few days back, not today: on a closed day the candle lighting that
+  // opened the closure was yesterday, and without it pairWindows drops the
+  // whole window - a refresh during Shabbat would reopen the site (2026-09-15).
+  const now = Date.now();
+  const start = new Date(now - HEBCAL_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+  const end = new Date(now + 45 * 24 * 60 * 60 * 1000);
   const startParam = toISODate(start);
   const endParam = toISODate(end);
 

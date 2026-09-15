@@ -242,3 +242,32 @@ describe('fetchWindows timeout', () => {
     await expect(fetchWindows(31.7683, 35.2137)).rejects.toThrow('hebcal fetch failed: 503');
   });
 });
+
+describe('fetchWindows on a closed day', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('still returns the closure in progress when fetched after its candle lighting', async () => {
+    // Saturday 19.9.2026, noon in Israel. The candles were lit on Friday, so a
+    // range starting today has no candles item and the window used to vanish -
+    // any cache refresh during Shabbat reopened the site.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-19T09:00:00Z'));
+    const items = [
+      { title: 'Candle lighting: 18:12', date: '2026-09-18T18:12:00+03:00', category: 'candles' },
+      { title: 'Havdalah: 19:18', date: '2026-09-19T19:18:00+03:00', category: 'havdalah' },
+    ];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      // Like Hebcal: only items dated on or after the requested start.
+      const start = new URL(String(input)).searchParams.get('start') ?? '';
+      const inRange = items.filter((item) => item.date.slice(0, 10) >= start);
+      return new Response(JSON.stringify({ items: inRange }), { status: 200 });
+    });
+
+    const windows = await fetchWindows(32.794, 34.9896);
+
+    expect(isBlocked(windows, Date.now())).toBe(true);
+  });
+});
