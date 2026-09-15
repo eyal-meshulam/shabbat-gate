@@ -3,7 +3,26 @@
 All notable changes to this package are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.4.1] - Unreleased
+## [0.4.2] - Unreleased
+
+### Fixed
+
+- **A window-list refresh during Shabbat or a holiday dropped the closure in progress, so the
+  site reopened mid-Shabbat.** Found 2026-09-15 on a consumer site. `fetchWindows` asked Hebcal
+  for a range starting *today*; on a closed day the candle lighting was yesterday, so the
+  response held only the havdalah, `pairWindows` (which opens a window only on candles) ignored
+  it, and the list had no window covering `now`. The cache is fresh for 24 hours, so a list
+  fetched on Friday went stale on Saturday and the first visitor after that refreshed it into
+  an "open" answer for the rest of Shabbat. Same for Yom Kippur and every Yom Tov day after the
+  first. Verified against live Hebcal: a range starting 2026-09-19 does not block Saturday noon,
+  one starting 2026-09-21 does not block Yom Kippur noon.
+
+  The range now starts `HEBCAL_LOOKBACK_DAYS` (4) days back, which covers the longest closure
+  (a two-day Rosh Hashana running into Shabbat). Past windows in the list are harmless. Applies
+  to the visitor-location windows too. Regression test: a fetch on Saturday noon, with Hebcal's
+  start-date filtering simulated, must still report blocked.
+
+## [0.4.1] - 2026-08-29
 
 ### Fixed
 
